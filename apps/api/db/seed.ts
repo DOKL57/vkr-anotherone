@@ -142,16 +142,16 @@ async function main() {
   );
 
   const adminUser = await one<{ id: string }>(
-    "INSERT INTO app_user (id, role_id, employee_id, telegram_id, username, status) VALUES (gen_random_uuid()::text, 'admin', $1, $2, $3, 'ACTIVE') RETURNING id",
-    [admin.id, "100100100", "artem_admin"]
+    "INSERT INTO app_user (id, role_id, employee_id, username, status) VALUES (gen_random_uuid()::text, 'admin', $1, $2, 'ACTIVE') RETURNING id",
+    [admin.id, "artem_admin"]
   );
   await one(
-    "INSERT INTO app_user (id, role_id, employee_id, telegram_id, username, status) VALUES (gen_random_uuid()::text, 'warehouse', $1, $2, $3, 'ACTIVE') RETURNING id",
-    [keeper.id, "200200200", "store_keeper"]
+    "INSERT INTO app_user (id, role_id, employee_id, username, status) VALUES (gen_random_uuid()::text, 'warehouse', $1, $2, 'ACTIVE') RETURNING id",
+    [keeper.id, "store_keeper"]
   );
   const engineerUser = await one<{ id: string }>(
-    "INSERT INTO app_user (id, role_id, employee_id, telegram_id, username, status) VALUES (gen_random_uuid()::text, 'sound_engineer', $1, $2, $3, 'ACTIVE') RETURNING id",
-    [engineer.id, "300300300", "mix_maryna"]
+    "INSERT INTO app_user (id, role_id, employee_id, username, status) VALUES (gen_random_uuid()::text, 'sound_engineer', $1, $2, 'ACTIVE') RETURNING id",
+    [engineer.id, "mix_maryna"]
   );
 
   const project = await one<{ id: string }>(

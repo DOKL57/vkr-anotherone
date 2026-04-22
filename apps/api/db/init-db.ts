@@ -57,7 +57,6 @@ const statements = [
   `DROP TABLE IF EXISTS "RepairRecord" CASCADE;`,
   `DROP TABLE IF EXISTS "InventoryBalance" CASCADE;`,
   `DROP TABLE IF EXISTS "EquipmentItem" CASCADE;`,
-  `DROP TABLE IF EXISTS "TelegramUser" CASCADE;`,
   `DROP TABLE IF EXISTS "Employee" CASCADE;`,
   `DROP TABLE IF EXISTS "StorageLocation" CASCADE;`,
   `DROP TABLE IF EXISTS "Warehouse" CASCADE;`,
@@ -152,7 +151,6 @@ const statements = [
     id TEXT PRIMARY KEY,
     role_id TEXT NOT NULL REFERENCES user_role(id) ON DELETE RESTRICT,
     employee_id TEXT REFERENCES employee(id) ON DELETE SET NULL,
-    telegram_id TEXT UNIQUE,
     username TEXT,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP

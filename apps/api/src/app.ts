@@ -10,7 +10,6 @@ import { z } from "zod";
 import { query, queryOne, withTransaction } from "./db.js";
 import { env } from "./env.js";
 import { parseIntentWithLlm } from "./llm.js";
-import { verifyTelegramInitData } from "./telegramAuth.js";
 
 type SessionContext = {
   lastIntent?: string;
@@ -93,7 +92,6 @@ type EmployeeRow = {
   role: string | null;
   roleId: string | null;
   appUserId: string | null;
-  telegramId: string | null;
   username: string | null;
 };
 
@@ -327,7 +325,6 @@ async function getEmployeeRows(client?: PoolClient) {
         ur.name AS role,
         ur.id AS "roleId",
         au.id AS "appUserId",
-        au.telegram_id AS "telegramId",
         au.username
       FROM employee e
       LEFT JOIN app_user au
@@ -1672,82 +1669,7 @@ async function formatPurchases() {
     .join("\n");
 }
 
-async function upsertTelegramUser(params: {
-  telegramId: string;
-  username?: string;
-  firstName?: string;
-  lastName?: string;
-}) {
-  const existing = await queryOne<{ id: string }>(
-    "SELECT id FROM app_user WHERE telegram_id = $1 LIMIT 1",
-    [params.telegramId]
-  );
-
-  if (existing) {
-    await query("UPDATE app_user SET username = $2 WHERE id = $1", [existing.id, params.username ?? null]);
-  } else {
-    const engineerRoleId = await findRoleId("SOUND_ENGINEER");
-    const fallbackEmployee = await queryOne<{ id: string }>(
-      `
-        SELECT e.id
-        FROM employee e
-        JOIN app_user au
-          ON au.employee_id = e.id
-         AND au.status = 'ACTIVE'
-        JOIN user_role ur
-          ON ur.id = au.role_id
-        WHERE ur.name = 'SOUND_ENGINEER'
-        ORDER BY au.created_at ASC
-        LIMIT 1
-      `,
-      []
-    );
-
-    await query(
-      `
-        INSERT INTO app_user (id, role_id, employee_id, telegram_id, username, status)
-        VALUES (gen_random_uuid()::text, $1, $2, $3, $4, 'ACTIVE')
-      `,
-      [engineerRoleId, fallbackEmployee?.id ?? null, params.telegramId, params.username ?? null]
-    );
-  }
-
-  return queryOne<EmployeeRow>(
-    `
-      SELECT DISTINCT ON (au.id)
-        e.id,
-        e.full_name AS "fullName",
-        e.phone,
-        e.email,
-        e.position,
-        ur.name AS role,
-        ur.id AS "roleId",
-        au.id AS "appUserId",
-        au.telegram_id AS "telegramId",
-        au.username
-      FROM app_user au
-      LEFT JOIN employee e
-        ON e.id = au.employee_id
-      LEFT JOIN user_role ur
-        ON ur.id = au.role_id
-      WHERE au.telegram_id = $1
-      LIMIT 1
-    `,
-    [params.telegramId]
-  );
-}
-
-async function resolveAppUserId(params: { employeeId?: string; telegramId?: string }) {
-  if (params.telegramId) {
-    const byTelegram = await queryOne<{ id: string }>(
-      "SELECT id FROM app_user WHERE telegram_id = $1 LIMIT 1",
-      [params.telegramId]
-    );
-    if (byTelegram) {
-      return byTelegram.id;
-    }
-  }
-
+async function resolveAppUserId(params: { employeeId?: string }) {
   if (params.employeeId) {
     const byEmployee = await queryOne<{ id: string }>(
       "SELECT id FROM app_user WHERE employee_id = $1 AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1",
@@ -1764,24 +1686,10 @@ async function resolveAppUserId(params: { employeeId?: string; telegramId?: stri
 async function askAssistant(params: {
   message: string;
   employeeId?: string;
-  telegramId?: string;
-  username?: string;
-  firstName?: string;
-  lastName?: string;
   sessionKey: string;
 }) {
-  if (params.telegramId) {
-    await upsertTelegramUser({
-      telegramId: params.telegramId,
-      username: params.username,
-      firstName: params.firstName,
-      lastName: params.lastName
-    });
-  }
-
   const appUserId = await resolveAppUserId({
-    employeeId: params.employeeId,
-    telegramId: params.telegramId
+    employeeId: params.employeeId
   });
 
   const context = sessionState.get(params.sessionKey) ?? {};
@@ -1882,7 +1790,6 @@ export function createApp() {
           ur.name AS role,
           ur.id AS "roleId",
           au.id AS "appUserId",
-          au.telegram_id AS "telegramId",
           au.username
         FROM employee e
         JOIN app_user au
@@ -1907,47 +1814,6 @@ export function createApp() {
         fullName: employee.fullName,
         role: employee.role
       }
-    });
-  }));
-
-  app.post("/api/auth/telegram", asyncHandler(async (req, res) => {
-    const schema = z.object({
-      initData: z.string().min(1)
-    });
-    const { initData } = schema.parse(req.body);
-    const user = verifyTelegramInitData(
-      initData,
-      env.TELEGRAM_BOT_TOKEN,
-      env.TELEGRAM_AUTH_DATE_TOLERANCE_SEC
-    );
-
-    if (!user) {
-      return res.status(401).json({
-        error: "Невалидные данные Telegram."
-      });
-    }
-
-    const tgUser = await upsertTelegramUser({
-      telegramId: String(user.id),
-      username: user.username,
-      firstName: user.first_name,
-      lastName: user.last_name
-    });
-
-    return res.json({
-      mode: "telegram",
-      telegramUser: {
-        id: tgUser?.appUserId,
-        telegramId: tgUser?.telegramId,
-        username: tgUser?.username
-      },
-      employee: tgUser?.id
-        ? {
-            id: tgUser.id,
-            fullName: tgUser.fullName,
-            role: tgUser.role
-          }
-        : null
     });
   }));
 
@@ -2022,10 +1888,6 @@ export function createApp() {
       message: z.string().optional(),
       query: z.string().optional(),
       employeeId: z.string().optional(),
-      telegramId: z.string().optional(),
-      username: z.string().optional(),
-      firstName: z.string().optional(),
-      lastName: z.string().optional(),
       sessionId: z.string().nullable().optional()
     });
 
@@ -2038,25 +1900,7 @@ export function createApp() {
     const result = await askAssistant({
       ...input,
       message,
-      sessionKey:
-        input.sessionId ??
-        (input.telegramId ? `telegram:${input.telegramId}` : `employee:${input.employeeId ?? "guest"}`)
-    });
-    res.json(result);
-  }));
-
-  app.post("/api/bot/message", asyncHandler(async (req, res) => {
-    const schema = z.object({
-      telegramId: z.string().min(1),
-      username: z.string().optional(),
-      firstName: z.string().optional(),
-      lastName: z.string().optional(),
-      message: z.string().min(1)
-    });
-    const input = schema.parse(req.body);
-    const result = await askAssistant({
-      ...input,
-      sessionKey: `telegram:${input.telegramId}`
+      sessionKey: input.sessionId ?? `employee:${input.employeeId ?? "guest"}`
     });
     res.json(result);
   }));

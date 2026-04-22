@@ -165,10 +165,8 @@ export default function App() {
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [search, setSearch] = useState("");
   
-  const [authMode, setAuthMode] = useState<"guest" | "telegram" | "demo">("guest");
+  const [authMode, setAuthMode] = useState<"guest" | "demo">("guest");
   const [actorId, setActorId] = useState<string | null>(null);
-  const [telegramUserId, setTelegramUserId] = useState<string | null>(null);
-  const [authName, setAuthName] = useState("Локальный режим");
   const [actorRole, setActorRole] = useState<string | null>(null);
   
   const [issueForm, setIssueForm] = useState(emptyIssueForm);
@@ -194,38 +192,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    const webApp = window.Telegram?.WebApp;
-    webApp?.ready();
-    webApp?.expand();
-
-    const tgUser = webApp?.initDataUnsafe?.user;
-    if (tgUser) {
-      setAuthName(`${tgUser.first_name} ${tgUser.last_name ?? ""}`.trim());
-    }
-
-    if (webApp?.initData) {
-      fetchJson<{ telegramUser: any; employee: Employee | null }>("/api/auth/telegram", {
-        method: "POST",
-        body: JSON.stringify({ initData: webApp.initData })
-      })
-        .then((res) => {
-          setAuthMode("telegram");
-          if (res.telegramUser?.telegramId) {
-            setTelegramUserId(res.telegramUser.telegramId); // API returns telegramId, but we need the internal ID if possible, or just the Telegram ID? Wait, the API returns the internal ID?
-          }
-          if (res.employee) {
-            setActorId(res.employee.id);
-            setAuthName(res.employee.fullName);
-            setActorRole(res.employee.role);
-          }
-        })
-        .catch(() => {
-          setAuthMode("demo");
-        });
-    } else {
-      setAuthMode("demo");
-    }
-
+    setAuthMode("demo");
     loadData();
   }, []);
 
@@ -394,7 +361,6 @@ export default function App() {
                 if (emp) {
                   if (window.confirm(`Вы уверены, что хотите сменить пользователя на "${emp.fullName}"?\nПрава доступа будут изменены на: ${roleLabel(emp.role)}`)) {
                     setActorId(targetId);
-                    setAuthName(emp.fullName);
                     setActorRole(emp.role);
                     setSessionId(null);
                   }

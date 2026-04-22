@@ -26,8 +26,6 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-replace_me}
-      TELEGRAM_AUTH_DATE_TOLERANCE_SEC: ${TELEGRAM_AUTH_DATE_TOLERANCE_SEC:-86400}
     ports:
       - "3001:3001"
 
@@ -39,20 +37,8 @@ services:
       - api
     environment:
       VITE_API_URL: http://localhost:3001
-      VITE_TELEGRAM_BOT_USERNAME: sound_rental_bot
     ports:
       - "5173:5173"
-
-  bot:
-    build:
-      context: .
-      dockerfile: ./apps/bot/Dockerfile
-    depends_on:
-      - api
-    environment:
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-replace_me}
-      TELEGRAM_WEBAPP_URL: ${TELEGRAM_WEBAPP_URL:-http://localhost:5173}
-      API_URL: ${API_URL:-http://api:3001}
 
 volumes:
   postgres_data:

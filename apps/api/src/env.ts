@@ -24,9 +24,5 @@ export const env = {
   LOCAL_LLM_MODEL: process.env.LOCAL_LLM_MODEL ?? "local-model",
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ?? "",
   OPENROUTER_BASE_URL: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
-  OPENROUTER_MODEL: process.env.OPENROUTER_MODEL ?? "openrouter/free",
-  TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN ?? "",
-  TELEGRAM_AUTH_DATE_TOLERANCE_SEC: Number(
-    process.env.TELEGRAM_AUTH_DATE_TOLERANCE_SEC ?? 86400
-  )
+  OPENROUTER_MODEL: process.env.OPENROUTER_MODEL ?? "openrouter/free"
 };
