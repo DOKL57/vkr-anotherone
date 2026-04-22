@@ -51,12 +51,12 @@ export function getConnectionStringCandidates(raw = process.env.DATABASE_URL, cw
   addCandidate(explicitHost);
   candidates.push(explicitPort ? replaceHost(raw, currentHost, explicitPort) : raw);
 
-  if (currentHost === "worklist-postgres" || currentHost.endsWith("-postgres")) {
+  if (currentHost.endsWith("-postgres")) {
     addCandidate("postgres");
   }
 
   if (localWorkspace && currentHost !== "localhost") {
-    if (currentHost === "postgres" || currentHost === "worklist-postgres" || currentHost.endsWith("-postgres")) {
+    if (currentHost === "postgres" || currentHost.endsWith("-postgres")) {
       addCandidate("localhost");
     }
   }
