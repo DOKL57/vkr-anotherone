@@ -24,7 +24,36 @@ wsl --install -d Ubuntu
 
 После установки запустите Docker Desktop и дождитесь, пока он полностью стартует.
 
-### 3. Откройте терминал Ubuntu
+### 3. Установите LM Studio
+
+LM Studio нужен до первого запуска проекта, если хотите, чтобы AI работал локально.
+
+Скачать:
+[https://lmstudio.ai/](https://lmstudio.ai/)
+
+Полезные инструкции:
+
+- старт LM Studio: [https://lmstudio.ai/docs/app/basics](https://lmstudio.ai/docs/app/basics)
+- как поднять локальный сервер: [https://lmstudio.ai/docs/developer/core/server](https://lmstudio.ai/docs/developer/core/server)
+- быстрый API-старт: [https://lmstudio.ai/docs/developer/rest/quickstart](https://lmstudio.ai/docs/developer/rest/quickstart)
+
+Что сделать в LM Studio:
+
+1. Установить программу.
+2. Скачать модель.
+3. Загрузить модель в память.
+4. Открыть вкладку `Developer`.
+5. Включить `Start server`.
+6. Убедиться, что сервер работает на `http://localhost:1234`.
+
+Если не знаете, какую модель взять:
+
+- рекомендую начать с `Qwen3-1.7B-Instruct` в формате `GGUF`, вариант `4-bit` вроде `Q4_K_M`
+- если компьютер слабый, можно взять `ibm/granite-4-micro`
+
+`Qwen3-1.7B-Instruct` я рекомендую как практичный лёгкий вариант. `ibm/granite-4-micro` LM Studio сама использует в своих примерах документации.
+
+### 4. Откройте терминал Ubuntu
 
 После установки WSL откройте приложение `Ubuntu` из меню `Пуск`.
 
@@ -35,7 +64,7 @@ sudo apt update
 sudo apt install -y git
 ```
 
-### 4. Скачайте проект
+### 5. Скачайте проект
 
 Если скачиваете проект первый раз:
 
@@ -65,29 +94,9 @@ bash ./run-all.sh start
 
 Если позже захотите поменять настройки, откройте файл [.env](/E:/vkr/.env).
 
-### 2. Настройте AI
+### 2. Проверьте настройки AI
 
-Есть 2 варианта.
-
-#### Вариант A. LM Studio на вашем компьютере
-
-Подходит, если хотите локальную AI-модель без внешнего API.
-
-1. Скачайте LM Studio:
-[https://lmstudio.ai/](https://lmstudio.ai/)
-2. Краткая инструкция по первому запуску:
-[https://lmstudio.ai/docs/app/basics](https://lmstudio.ai/docs/app/basics)
-3. Запустите локальный сервер LM Studio:
-[https://lmstudio.ai/docs/local-server](https://lmstudio.ai/docs/local-server)
-
-Что нужно сделать в LM Studio:
-
-1. Установить программу.
-2. Скачать любую совместимую модель.
-3. Загрузить модель в память.
-4. Включить локальный сервер на `http://localhost:1234`.
-
-В файле `.env` уже подходят такие значения:
+Для локального запуска через LM Studio в файле `.env` уже подходят такие значения:
 
 ```env
 LOCAL_LLM_URL=http://host.docker.internal:1234/v1
@@ -96,9 +105,11 @@ LOCAL_LLM_MODEL=auto
 
 `LOCAL_LLM_MODEL=auto` оставляйте как есть.
 
-#### Вариант B. OpenRouter
+Если LM Studio уже установлена и сервер в ней запущен, обычно больше ничего менять не нужно.
 
-Если не хотите ставить LM Studio, можно использовать OpenRouter.
+#### Если не хотите ставить LM Studio
+
+Можно использовать OpenRouter.
 
 В `.env` укажите ключ:
 
