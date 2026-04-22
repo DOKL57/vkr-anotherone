@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { Client } from "pg";
 import { fileURLToPath } from "url";
 import path from "path";
+import { formatConnectionTargets, getConnectionStringCandidates } from "../src/db-connection.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const envCandidates = [
@@ -18,32 +19,11 @@ for (const candidate of envCandidates) {
   }
 }
 
-function resolveConnectionString() {
-  const raw = process.env.DATABASE_URL;
-  if (!raw) {
-    return raw;
-  }
+const connectionStrings = getConnectionStringCandidates();
 
-  const localWorkspace =
-    /^[A-Za-z]:\\/.test(process.cwd()) ||
-    process.cwd().startsWith("/mnt/") ||
-    process.cwd().startsWith("/Users/") ||
-    process.cwd().startsWith("/home/");
-
-  if (localWorkspace && raw.includes("@postgres:")) {
-    return raw.replace("@postgres:", "@localhost:");
-  }
-
-  return raw;
-}
-
-const connectionString = resolveConnectionString();
-
-if (!connectionString) {
+if (connectionStrings.length === 0) {
   throw new Error("DATABASE_URL is not set");
 }
-
-const client = new Client({ connectionString });
 
 const statements = [
   `CREATE EXTENSION IF NOT EXISTS "pgcrypto";`,
@@ -222,14 +202,28 @@ const statements = [
 ];
 
 async function main() {
-  await client.connect();
-  try {
-    for (const statement of statements) {
-      await client.query(statement);
+  const errors: string[] = [];
+
+  for (const connectionString of connectionStrings) {
+    const client = new Client({ connectionString });
+    try {
+      await client.connect();
+      for (const statement of statements) {
+        await client.query(statement);
+      }
+      await client.end();
+      return;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+      await client.end().catch(() => undefined);
+    } finally {
+      // client.end handled in try/catch branches
     }
-  } finally {
-    await client.end();
   }
+
+  throw new Error(
+    `DB init fail. Tried ${formatConnectionTargets(connectionStrings)}. Last errors: ${errors.join(" | ")}`
+  );
 }
 
 main().catch((error) => {

@@ -8,8 +8,8 @@ const app = createApp();
 async function bootstrap() {
   await query("SELECT 1");
 
-  const server = app.listen(env.PORT, () => {
-    console.log(`API ready on http://localhost:${env.PORT}`);
+  const server = app.listen(env.PORT, env.HOST, () => {
+    console.log(`API ready on http://${env.HOST}:${env.PORT}`);
   });
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {

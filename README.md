@@ -42,6 +42,9 @@ chmod +x ./run-all.sh
 
 ```env
 DATABASE_URL=postgresql://postgres:postgres@postgres:5432/sound_rental?schema=public
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+HOST=0.0.0.0
 PORT=3001
 CORS_ORIGIN=http://localhost:5173
 LOCAL_LLM_URL=http://host.docker.internal:1234/v1
@@ -50,9 +53,12 @@ OPENROUTER_API_KEY=
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_MODEL=openrouter/free
 API_URL=http://api:3001
+VITE_API_PROXY_TARGET=http://api:3001
 ```
 
 Если задан `OPENROUTER_API_KEY`, backend использует OpenRouter вместо локальной LLM.
+Если в окружении остался старый alias БД вроде `worklist-postgres`, backend теперь умеет переключиться на `POSTGRES_HOST` или на стандартный host `postgres`.
+Для Docker web proxy должен смотреть на `http://api:3001`, а не на `localhost:3001`, иначе login даст `ECONNREFUSED`.
 
 ## URL
 

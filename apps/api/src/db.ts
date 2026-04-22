@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { fileURLToPath } from "url";
 import path from "path";
+import { formatConnectionTargets, getConnectionStringCandidates } from "./db-connection.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const envCandidates = [
@@ -18,39 +19,46 @@ for (const candidate of envCandidates) {
   }
 }
 
-function resolveConnectionString() {
-  const raw = process.env.DATABASE_URL;
-  if (!raw) {
-    return raw;
-  }
+const connectionStrings = getConnectionStringCandidates();
 
-  const localWorkspace =
-    /^[A-Za-z]:\\/.test(process.cwd()) ||
-    process.cwd().startsWith("/mnt/") ||
-    process.cwd().startsWith("/Users/") ||
-    process.cwd().startsWith("/home/");
-
-  if (localWorkspace && raw.includes("@postgres:")) {
-    return raw.replace("@postgres:", "@localhost:");
-  }
-
-  return raw;
-}
-
-const connectionString = resolveConnectionString();
-
-if (!connectionString) {
+if (connectionStrings.length === 0) {
   throw new Error("DATABASE_URL is not set");
 }
 
-export const pool = new Pool({ connectionString });
+let poolPromise: Promise<Pool> | null = null;
+
+async function createPool() {
+  const errors: string[] = [];
+
+  for (const connectionString of connectionStrings) {
+    const pool = new Pool({ connectionString });
+    try {
+      await pool.query("SELECT 1");
+      return pool;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+      await pool.end().catch(() => undefined);
+    }
+  }
+
+  throw new Error(
+    `DB conn fail. Tried ${formatConnectionTargets(connectionStrings)}. Last errors: ${errors.join(" | ")}`
+  );
+}
+
+async function getPool() {
+  if (!poolPromise) {
+    poolPromise = createPool();
+  }
+  return poolPromise;
+}
 
 export async function query<T extends QueryResultRow>(
   text: string,
   params: unknown[] = [],
   client?: PoolClient
 ) {
-  const runner = client ?? pool;
+  const runner = client ?? (await getPool());
   const result = await runner.query<T>(text, params);
   return result.rows;
 }
@@ -65,6 +73,7 @@ export async function queryOne<T extends QueryResultRow>(
 }
 
 export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>) {
+  const pool = await getPool();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -80,5 +89,12 @@ export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>)
 }
 
 export async function closePool() {
-  await pool.end();
+  if (!poolPromise) {
+    return;
+  }
+
+  const pool = await poolPromise.catch(() => null);
+  if (pool) {
+    await pool.end();
+  }
 }

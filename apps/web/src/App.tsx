@@ -171,6 +171,27 @@ function isAuthError(error: unknown) {
   return status === 401 || message.includes("авториза") || message.includes("сесс") || message.includes("нет прав");
 }
 
+function formatUserError(error: unknown, mode: "default" | "auth" = "default") {
+  const status = typeof error === "object" && error && "status" in error ? (error as { status?: number }).status : undefined;
+  const raw = String(error).replace(/^Error:\s*/i, "").trim();
+
+  if (mode === "auth") {
+    if (status === 401) {
+      return "Неверный логин или пароль. Проверьте данные и попробуйте снова.";
+    }
+
+    if (status === 500 || /http 500/i.test(raw)) {
+      return "Сервис входа временно недоступен. Попробуйте позже или обратитесь к администратору.";
+    }
+  }
+
+  if (status === 500 || /http 500/i.test(raw)) {
+    return "Сервис временно недоступен. Попробуйте позже.";
+  }
+
+  return raw || "Произошла ошибка. Попробуйте ещё раз.";
+}
+
 export default function App() {
   const [data, setData] = useState<BootstrapData | null>(null);
   const [auth, setAuth] = useState<StoredAuthSession | null>(null);
@@ -210,7 +231,7 @@ export default function App() {
         setData(null);
         setSessionId(null);
       }
-      setError(String(err));
+      setError(formatUserError(err));
     }
   }
 
@@ -265,7 +286,7 @@ export default function App() {
       clearStoredAuthSession();
       setAuth(null);
       setData(null);
-      setError(String(err));
+      setError(formatUserError(err, "auth"));
     } finally {
       setAuthBusy(false);
     }
@@ -302,7 +323,7 @@ export default function App() {
       setAiResult(res);
       setSessionId(res.sessionId);
     } catch (err) {
-      setError(String(err));
+      setError(formatUserError(err));
     } finally {
       setBusy(null);
     }
@@ -334,7 +355,7 @@ export default function App() {
       setIssueForm(emptyIssueForm);
       await loadData();
     } catch (err) {
-      setError(String(err));
+      setError(formatUserError(err));
     } finally {
       setBusy(null);
     }
@@ -364,7 +385,7 @@ export default function App() {
       setRepairForm(emptyRepairForm);
       await loadData();
     } catch (err) {
-      setError(String(err));
+      setError(formatUserError(err));
     } finally {
       setBusy(null);
     }
@@ -397,7 +418,7 @@ export default function App() {
       setPurchaseForm(emptyPurchaseForm);
       await loadData();
     } catch (err) {
-      setError(String(err));
+      setError(formatUserError(err));
     } finally {
       setBusy(null);
     }
@@ -413,7 +434,7 @@ export default function App() {
       });
       await loadData();
     } catch (err) {
-      setError(String(err));
+      setError(formatUserError(err));
     } finally {
       setBusy(null);
     }
@@ -425,23 +446,39 @@ export default function App() {
         <div className="auth-backdrop" />
         <div className="auth-layout">
           <section className="auth-side">
-            <div className="eyebrow">Sound Rental / Access</div>
-            <h1>Авторизация</h1>
+            <div className="eyebrow">Sound Rental / Employee Access</div>
+            <h1>Вход для сотрудников</h1>
             <p>
-              Вход только по заранее выданным учётным данным. Регистрация отключена. Без логина и пароля
-              система недоступна.
+              Используйте логин и пароль, которые вам выдал администратор. Самостоятельная регистрация на этой странице
+              недоступна.
             </p>
             <div className="auth-note">
-              <strong>Что использовать</strong>
-              <span>Логины и пароли заведены в БД и продублированы в `docs/employees.md`.</span>
+              <strong>Нет логина или пароля?</strong>
+              <span>Чтобы получить доступ или восстановить его, обратитесь к администратору системы.</span>
+            </div>
+            <div className="auth-points">
+              <div className="auth-point">
+                <strong>Только для зарегистрированных пользователей</strong>
+                <span>Вход доступен сотрудникам, у которых уже создана учётная запись.</span>
+              </div>
+              <div className="auth-point">
+                <strong>Проверьте раскладку и регистр</strong>
+                <span>Логин и пароль вводятся точно так, как были выданы.</span>
+              </div>
+              <div className="auth-point">
+                <strong>После входа откроется рабочая панель</strong>
+                <span>Каталог оборудования, выдачи, ремонты и закупки доступны после авторизации.</span>
+              </div>
             </div>
           </section>
 
           <section className="auth-card">
             <div className="panel-header">
               <h2>Войти в систему</h2>
-              <span>{authBusy ? "Проверка..." : "Только вход"}</span>
+              <span>{authBusy ? "Проверка..." : "Защищённый вход"}</span>
             </div>
+
+            <p className="auth-caption">Введите данные своей учётной записи сотрудника.</p>
 
             <form className="auth-form" onSubmit={handleLogin}>
               <label>
@@ -450,7 +487,7 @@ export default function App() {
                   autoComplete="username"
                   value={authForm.username}
                   onChange={(event) => setAuthForm((prev) => ({ ...prev, username: event.target.value }))}
-                  placeholder="Например, artem_admin"
+                  placeholder="Введите логин"
                 />
               </label>
 
@@ -469,6 +506,11 @@ export default function App() {
                 Войти
               </button>
             </form>
+
+            <div className="auth-support">
+              Если доступ не работает, обратитесь к администратору. Регистрация и восстановление пароля через интерфейс не
+              предусмотрены.
+            </div>
 
             {error ? <div className="error-box auth-error">{error}</div> : null}
           </section>

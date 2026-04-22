@@ -10,15 +10,25 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-sound_rental}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   api:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: ./apps/api/Dockerfile
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/sound_rental?schema=public}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      HOST: ${HOST:-0.0.0.0}
       PORT: ${PORT:-3001}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       LOCAL_LLM_URL: ${LOCAL_LLM_URL:-http://host.docker.internal:1234/v1}
@@ -28,15 +38,24 @@ services:
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
     ports:
       - "3001:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health >/dev/null 2>&1 || exit 1"]
+      start_period: 20s
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   web:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: ./apps/web/Dockerfile
     depends_on:
-      - api
+      api:
+        condition: service_started
     environment:
       VITE_API_URL: http://localhost:3001
+      VITE_API_PROXY_TARGET: ${VITE_API_PROXY_TARGET:-http://api:3001}
     ports:
       - "5173:5173"
 

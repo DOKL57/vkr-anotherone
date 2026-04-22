@@ -18,6 +18,7 @@ for (const candidate of envCandidates) {
 }
 
 export const env = {
+  HOST: process.env.HOST ?? "0.0.0.0",
   PORT: Number(process.env.PORT ?? 3001),
   CORS_ORIGIN: process.env.CORS_ORIGIN ?? "http://localhost:5173",
   LOCAL_LLM_URL: process.env.LOCAL_LLM_URL ?? "http://localhost:1234/v1",

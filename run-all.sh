@@ -130,8 +130,10 @@ cmd_dev() {
   set +a
 
   export PORT="${PORT:-3001}"
+  export HOST="${HOST:-0.0.0.0}"
   export API_URL="${API_URL:-http://localhost:3001}"
   export VITE_API_URL="${VITE_API_URL:-http://localhost:3001}"
+  export VITE_API_PROXY_TARGET="${VITE_API_PROXY_TARGET:-http://localhost:3001}"
   export CORS_ORIGIN="${CORS_ORIGIN:-http://localhost:5173}"
   export LOCAL_LLM_MODEL="${LOCAL_LLM_MODEL:-auto}"
   export DATABASE_URL="${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/sound_rental?schema=public}"

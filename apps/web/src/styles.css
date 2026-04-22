@@ -93,6 +93,31 @@ button { cursor: pointer; border: 0; outline: none; }
   font-size: 17px;
 }
 
+.auth-points {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-point {
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  box-shadow: var(--shadow-sm);
+}
+
+.auth-point strong {
+  color: #111827;
+  font-size: 15px;
+}
+
+.auth-point span {
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .auth-note {
   display: grid;
   gap: 8px;
@@ -107,6 +132,14 @@ button { cursor: pointer; border: 0; outline: none; }
   display: grid;
   gap: 18px;
   align-content: center;
+}
+
+.auth-caption,
+.auth-support {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .auth-form {
