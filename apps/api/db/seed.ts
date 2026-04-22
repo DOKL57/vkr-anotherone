@@ -1,7 +1,9 @@
+import crypto from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { Pool, type QueryResultRow } from "pg";
-import { fileURLToPath } from "url";
-import path from "path";
+import { hashPassword, readEmployeeDirectory, type EmployeeDirectoryEntry } from "../src/auth.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const envCandidates = [
@@ -48,6 +50,76 @@ const pool = new Pool({ connectionString });
 async function one<T extends QueryResultRow>(sql: string, params: unknown[] = []) {
   const result = await pool.query<T>(sql, params);
   return result.rows[0];
+}
+
+async function seedEmployees() {
+  const employeeDirectory = readEmployeeDirectory();
+  const roleIdByName: Record<EmployeeDirectoryEntry["role"], string> = {
+    ADMIN: "admin",
+    WAREHOUSE: "warehouse",
+    SOUND_ENGINEER: "sound_engineer"
+  };
+
+  const employeesByUsername = new Map<string, { id: string; entry: EmployeeDirectoryEntry }>();
+  const usersByUsername = new Map<string, { id: string; employeeId: string; entry: EmployeeDirectoryEntry }>();
+
+  for (const entry of employeeDirectory) {
+    const employee = await one<{ id: string }>(
+      "INSERT INTO employee (id, full_name, phone, email, position) VALUES (gen_random_uuid()::text, $1, $2, $3, $4) RETURNING id",
+      [entry.fullName, entry.phone, entry.email, entry.position]
+    );
+
+    const user = await one<{ id: string }>(
+      `INSERT INTO app_user (
+        id,
+        role_id,
+        employee_id,
+        telegram_id,
+        username,
+        password_hash,
+        status
+      ) VALUES (
+        gen_random_uuid()::text,
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6
+      ) RETURNING id`,
+      [
+        roleIdByName[entry.role],
+        employee.id,
+        entry.telegramId,
+        entry.username,
+        hashPassword(entry.password),
+        entry.status
+      ]
+    );
+
+    employeesByUsername.set(entry.username, { id: employee.id, entry });
+    usersByUsername.set(entry.username, { id: user.id, employeeId: employee.id, entry });
+  }
+
+  const required = {
+    admin: employeesByUsername.get("artem_admin"),
+    keeper: employeesByUsername.get("igor_keeper"),
+    engineer: employeesByUsername.get("mix_maryna"),
+    adminUser: usersByUsername.get("artem_admin"),
+    engineerUser: usersByUsername.get("mix_maryna")
+  };
+
+  if (!required.admin || !required.keeper || !required.engineer || !required.adminUser || !required.engineerUser) {
+    throw new Error("Required seed users are missing in docs/employees.md.");
+  }
+
+  return {
+    admin: required.admin,
+    keeper: required.keeper,
+    engineer: required.engineer,
+    adminUser: required.adminUser,
+    engineerUser: required.engineerUser
+  };
 }
 
 async function main() {
@@ -128,31 +200,7 @@ async function main() {
     [whRoad.id, "Кейс", "1", "W", "7", "Гастрольный комплект"]
   );
 
-  const admin = await one<{ id: string }>(
-    "INSERT INTO employee (id, full_name, phone, email, position) VALUES (gen_random_uuid()::text, $1, $2, $3, $4) RETURNING id",
-    ["Смирнов Артём Павлович", "+7 999 111-22-33", "admin@sound.local", "Руководитель"]
-  );
-  const keeper = await one<{ id: string }>(
-    "INSERT INTO employee (id, full_name, phone, email, position) VALUES (gen_random_uuid()::text, $1, $2, $3, $4) RETURNING id",
-    ["Ковалёв Игорь Сергеевич", "+7 999 222-33-44", "store@sound.local", "Кладовщик"]
-  );
-  const engineer = await one<{ id: string }>(
-    "INSERT INTO employee (id, full_name, phone, email, position) VALUES (gen_random_uuid()::text, $1, $2, $3, $4) RETURNING id",
-    ["Белова Марина Андреевна", "+7 999 333-44-55", "engineer@sound.local", "Звукорежиссёр"]
-  );
-
-  const adminUser = await one<{ id: string }>(
-    "INSERT INTO app_user (id, role_id, employee_id, username, status) VALUES (gen_random_uuid()::text, 'admin', $1, $2, 'ACTIVE') RETURNING id",
-    [admin.id, "artem_admin"]
-  );
-  await one(
-    "INSERT INTO app_user (id, role_id, employee_id, username, status) VALUES (gen_random_uuid()::text, 'warehouse', $1, $2, 'ACTIVE') RETURNING id",
-    [keeper.id, "store_keeper"]
-  );
-  const engineerUser = await one<{ id: string }>(
-    "INSERT INTO app_user (id, role_id, employee_id, username, status) VALUES (gen_random_uuid()::text, 'sound_engineer', $1, $2, 'ACTIVE') RETURNING id",
-    [engineer.id, "mix_maryna"]
-  );
+  const { admin, keeper, engineer, adminUser, engineerUser } = await seedEmployees();
 
   const project = await one<{ id: string }>(
     `INSERT INTO project (id, name, customer, location, start_date, end_date, comment)

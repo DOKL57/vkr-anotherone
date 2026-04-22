@@ -1,5 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { fetchJson, uploadFile } from "./api";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  clearStoredAuthSession,
+  fetchJson,
+  readStoredAuthSession,
+  writeStoredAuthSession,
+  type StoredAuthSession
+} from "./api";
 
 type DashboardSummary = {
   equipmentCount: number;
@@ -17,6 +23,7 @@ type Employee = { id: string; fullName: string; role: string };
 type Project = { id: string; name: string };
 type Warehouse = { id: string; name: string };
 type StorageLocation = { id: string; label: string; warehouseId: string };
+type AuthEmployee = StoredAuthSession["employee"];
 
 type Equipment = {
   id: string;
@@ -75,6 +82,7 @@ type BootstrapData = {
   issues: Issue[];
   repairs: Repair[];
   purchases: Purchase[];
+  currentUser: AuthEmployee;
 };
 
 type AiResponse = {
@@ -83,8 +91,9 @@ type AiResponse = {
   intent: string;
 };
 
-type UploadResponse = {
-  text: string;
+type LoginResponse = {
+  token: string;
+  employee: AuthEmployee;
 };
 
 const emptyIssueForm = {
@@ -151,60 +160,79 @@ function roleLabel(role: string) {
   const map: Record<string, string> = {
     ADMIN: "Администратор",
     WAREHOUSE: "Кладовщик",
-    SOUND_ENGINEER: "Звукорежиссер"
+    SOUND_ENGINEER: "Звукорежиссёр"
   };
   return map[role] ?? role;
 }
 
+function isAuthError(error: unknown) {
+  const status = typeof error === "object" && error && "status" in error ? (error as { status?: number }).status : undefined;
+  const message = String(error).toLowerCase();
+  return status === 401 || message.includes("авториза") || message.includes("сесс") || message.includes("нет прав");
+}
+
 export default function App() {
   const [data, setData] = useState<BootstrapData | null>(null);
-  
+  const [auth, setAuth] = useState<StoredAuthSession | null>(null);
+  const [authForm, setAuthForm] = useState({ username: "", password: "" });
+  const [authBusy, setAuthBusy] = useState(false);
+
   const [query, setQuery] = useState("Где есть Shure SM58 и сколько XLR кабелей доступно?");
   const [aiResult, setAiResult] = useState<AiResponse | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [search, setSearch] = useState("");
-  
-  const [authMode, setAuthMode] = useState<"guest" | "demo">("guest");
-  const [actorId, setActorId] = useState<string | null>(null);
-  const [actorRole, setActorRole] = useState<string | null>(null);
-  
+
   const [issueForm, setIssueForm] = useState(emptyIssueForm);
   const [repairForm, setRepairForm] = useState(emptyRepairForm);
   const [purchaseForm, setPurchaseForm] = useState(emptyPurchaseForm);
-  
+
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const actor = auth?.employee ?? data?.currentUser ?? null;
+  const actorId = actor?.id ?? null;
+  const actorRole = actor?.role ?? null;
 
   async function loadData() {
     try {
       const bootstrap = await fetchJson<BootstrapData>("/api/bootstrap");
       setData(bootstrap);
-      
-      // If we are in demo mode and haven't picked an actor yet, pick the first one
-      if (authMode === "demo" && !actorId && bootstrap.employees.length > 0) {
-        setActorId(bootstrap.employees[0].id);
-        setActorRole(bootstrap.employees[0].role);
+
+      if (auth) {
+        const nextAuth = { ...auth, employee: bootstrap.currentUser };
+        setAuth(nextAuth);
+        writeStoredAuthSession(nextAuth);
       }
     } catch (err) {
+      if (isAuthError(err)) {
+        clearStoredAuthSession();
+        setAuth(null);
+        setData(null);
+        setSessionId(null);
+      }
       setError(String(err));
     }
   }
 
   useEffect(() => {
-    setAuthMode("demo");
-    loadData();
+    const stored = readStoredAuthSession();
+    if (!stored) {
+      return;
+    }
+
+    setAuth(stored);
+    void loadData();
   }, []);
 
   const equipmentFiltered = useMemo(() => {
     if (!data) return [];
     if (!search) return data.equipment;
     const lq = search.toLowerCase();
-    return data.equipment.filter(e => 
-      e.name.toLowerCase().includes(lq) || 
-      e.model.toLowerCase().includes(lq) || 
-      e.type.toLowerCase().includes(lq) ||
-      (e.serialNumber && e.serialNumber.toLowerCase().includes(lq))
+    return data.equipment.filter((item) =>
+      item.name.toLowerCase().includes(lq) ||
+      item.model.toLowerCase().includes(lq) ||
+      item.type.toLowerCase().includes(lq) ||
+      (item.serialNumber && item.serialNumber.toLowerCase().includes(lq))
     );
   }, [data, search]);
 
@@ -213,14 +241,61 @@ export default function App() {
     [data]
   );
 
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setError(null);
+
+    try {
+      const result = await fetchJson<LoginResponse>("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify(authForm)
+      });
+
+      const session: StoredAuthSession = {
+        token: result.token,
+        employee: result.employee
+      };
+
+      writeStoredAuthSession(session);
+      setAuth(session);
+      setAuthForm({ username: "", password: "" });
+      await loadData();
+    } catch (err) {
+      clearStoredAuthSession();
+      setAuth(null);
+      setData(null);
+      setError(String(err));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await fetchJson("/api/auth/logout", { method: "POST" });
+    } catch {
+      // local logout still enough
+    } finally {
+      clearStoredAuthSession();
+      setAuth(null);
+      setData(null);
+      setAiResult(null);
+      setSessionId(null);
+      setIssueForm(emptyIssueForm);
+      setRepairForm(emptyRepairForm);
+      setPurchaseForm(emptyPurchaseForm);
+    }
+  }
+
   async function handleAiQuery() {
     setBusy("ai");
     setError(null);
     try {
       const res = await fetchJson<AiResponse>("/api/ai/query", {
         method: "POST",
-        body: JSON.stringify({ 
-          query, 
+        body: JSON.stringify({
+          query,
           sessionId
         })
       });
@@ -234,7 +309,7 @@ export default function App() {
   }
 
   async function submitIssue() {
-    if (!actorId) return setError("Нет прав для операции (не авторизован).");
+    if (!actorId) return setError("Нет прав для операции.");
     setBusy("issue");
     setError(null);
     try {
@@ -266,7 +341,7 @@ export default function App() {
   }
 
   async function submitRepair() {
-    if (!actorId) return setError("Нет прав для операции (не авторизован).");
+    if (!actorId) return setError("Нет прав для операции.");
     setBusy("repair");
     setError(null);
     try {
@@ -280,7 +355,9 @@ export default function App() {
           quantity: Number(repairForm.quantity),
           reason: repairForm.reason,
           diagnosis: repairForm.diagnosis || undefined,
-          estimatedReadyAt: repairForm.estimatedReadyAt ? new Date(repairForm.estimatedReadyAt).toISOString() : undefined,
+          estimatedReadyAt: repairForm.estimatedReadyAt
+            ? new Date(repairForm.estimatedReadyAt).toISOString()
+            : undefined,
           responsibleId: repairForm.responsibleId || undefined
         })
       });
@@ -294,7 +371,7 @@ export default function App() {
   }
 
   async function submitPurchase() {
-    if (!actorId) return setError("Нет прав для операции (не авторизован).");
+    if (!actorId) return setError("Нет прав для операции.");
     setBusy("purchase");
     setError(null);
     try {
@@ -304,7 +381,9 @@ export default function App() {
           actorId,
           title: purchaseForm.title,
           supplierName: purchaseForm.supplierName,
-          plannedDeliveryAt: purchaseForm.plannedDeliveryAt ? new Date(purchaseForm.plannedDeliveryAt).toISOString() : undefined,
+          plannedDeliveryAt: purchaseForm.plannedDeliveryAt
+            ? new Date(purchaseForm.plannedDeliveryAt).toISOString()
+            : undefined,
           reason: purchaseForm.reason || "Закупка оборудования",
           items: [
             {
@@ -340,40 +419,90 @@ export default function App() {
     }
   }
 
+  if (!auth) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-backdrop" />
+        <div className="auth-layout">
+          <section className="auth-side">
+            <div className="eyebrow">Sound Rental / Access</div>
+            <h1>Авторизация</h1>
+            <p>
+              Вход только по заранее выданным учётным данным. Регистрация отключена. Без логина и пароля
+              система недоступна.
+            </p>
+            <div className="auth-note">
+              <strong>Что использовать</strong>
+              <span>Логины и пароли заведены в БД и продублированы в `docs/employees.md`.</span>
+            </div>
+          </section>
+
+          <section className="auth-card">
+            <div className="panel-header">
+              <h2>Войти в систему</h2>
+              <span>{authBusy ? "Проверка..." : "Только вход"}</span>
+            </div>
+
+            <form className="auth-form" onSubmit={handleLogin}>
+              <label>
+                <span>Логин</span>
+                <input
+                  autoComplete="username"
+                  value={authForm.username}
+                  onChange={(event) => setAuthForm((prev) => ({ ...prev, username: event.target.value }))}
+                  placeholder="Например, artem_admin"
+                />
+              </label>
+
+              <label>
+                <span>Пароль</span>
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={authForm.password}
+                  onChange={(event) => setAuthForm((prev) => ({ ...prev, password: event.target.value }))}
+                  placeholder="Введите пароль"
+                />
+              </label>
+
+              <button className="primary-btn" type="submit" disabled={authBusy || !authForm.username || !authForm.password}>
+                Войти
+              </button>
+            </form>
+
+            {error ? <div className="error-box auth-error">{error}</div> : null}
+          </section>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="page-shell">
       <header className="hero">
         <div>
-          <div className="eyebrow">Склад звука / {authMode}</div>
+          <div className="eyebrow">Склад звука / защищённый доступ</div>
           <h1>Учёт оборудования</h1>
-          <p>
-            Единая панель управления выдачей, складом, закупками и ремонтом.
-          </p>
+          <p>Единая панель управления выдачами, складом, закупками и ремонтом.</p>
         </div>
         <div className="hero-card">
           <div>
-            Авторизация: 
-            <select 
-              value={actorId ?? ""} 
-              onChange={e => {
-                const targetId = e.target.value;
-                const emp = data?.employees.find(x => x.id === targetId);
-                if (emp) {
-                  if (window.confirm(`Вы уверены, что хотите сменить пользователя на "${emp.fullName}"?\nПрава доступа будут изменены на: ${roleLabel(emp.role)}`)) {
-                    setActorId(targetId);
-                    setActorRole(emp.role);
-                    setSessionId(null);
-                  }
-                }
-              }} 
-              style={{ width: "auto", padding: "4px 8px", marginBottom: 0, marginLeft: 8 }}
-            >
-              <option value="" disabled>Выберите сотрудника...</option>
-              {data?.employees.map(emp => <option key={emp.id} value={emp.id}>{emp.fullName} ({roleLabel(emp.role)})</option>)}
-            </select>
+            <span>Пользователь:</span>
+            <strong>{actor?.fullName}</strong>
           </div>
-          <div>Категорий: {data?.categories.length ?? "..."}</div>
-          <div>Сессия AI: {sessionId ?? "новая"}</div>
+          <div>
+            <span>Роль:</span>
+            <strong>{roleLabel(actor?.role ?? "")}</strong>
+          </div>
+          <div>
+            <span>Логин:</span>
+            <strong>{actor?.username}</strong>
+          </div>
+          <div>
+            <span>Сессия AI:</span>
+            <strong>{sessionId ?? "новая"}</strong>
+          </div>
+          <button className="secondary-btn hero-logout" onClick={handleLogout}>Выйти</button>
         </div>
       </header>
 
@@ -390,7 +519,7 @@ export default function App() {
             <article className="stat-card accent-6"><span>Закупки</span><strong>{data.dashboard.activePurchases}</strong></article>
           </>
         ) : (
-          <div className="loading-box">Загрузка сводки…</div>
+          <div className="loading-box">Загрузка сводки...</div>
         )}
       </section>
 
@@ -398,9 +527,9 @@ export default function App() {
         <article className="panel">
           <div className="panel-header">
             <h2>AI-помощник</h2>
-            <span>{busy === "ai" ? "Обработка…" : "Готов"}</span>
+            <span>{busy === "ai" ? "Обработка..." : "Готов"}</span>
           </div>
-          <textarea value={query} onChange={(e) => setQuery(e.target.value)} rows={3} placeholder="Спросите что-нибудь..." />
+          <textarea value={query} onChange={(event) => setQuery(event.target.value)} rows={3} placeholder="Спросите что-нибудь..." />
           <button className="primary-btn" onClick={handleAiQuery} disabled={busy === "ai"}>Отправить запрос</button>
           {aiResult ? (
             <div className="response-box">
@@ -411,17 +540,17 @@ export default function App() {
             </div>
           ) : null}
         </article>
-        
+
         <article className="panel">
           <div className="panel-header">
-            <h2>Роли и Сотрудники</h2>
+            <h2>Роли и сотрудники</h2>
             <span>Справочник</span>
           </div>
           <div className="stack-list" style={{ maxHeight: "200px", overflowY: "auto" }}>
-            {data?.employees.map(emp => (
-              <div key={emp.id} className="list-row" style={{ padding: "10px" }}>
-                <strong>{emp.fullName}</strong>
-                <span className="status-pill status-available">{roleLabel(emp.role)}</span>
+            {data?.employees.map((employee) => (
+              <div key={employee.id} className="list-row" style={{ padding: "10px" }}>
+                <strong>{employee.fullName}</strong>
+                <span className="status-pill status-available">{roleLabel(employee.role)}</span>
               </div>
             ))}
           </div>
@@ -435,7 +564,7 @@ export default function App() {
             className="search-input"
             placeholder="Поиск по модели, типу, серийному номеру"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => setSearch(event.target.value)}
           />
         </div>
         <div className="table-wrap">
@@ -459,9 +588,9 @@ export default function App() {
                   <td>{item.categoryName}</td>
                   <td><span className={`status-pill status-${item.status.toLowerCase()}`}>{statusLabel(item.status)}</span></td>
                   <td>
-                    {item.locations.map((loc) => (
-                      <div key={loc.id} style={{ marginBottom: 4 }}>
-                        {loc.label}: <strong>{loc.quantity}</strong> шт.
+                    {item.locations.map((location) => (
+                      <div key={location.id} style={{ marginBottom: 4 }}>
+                        {location.label}: <strong>{location.quantity}</strong> шт.
                       </div>
                     ))}
                     {item.locations.length === 0 && <span className="muted-text">Нет на складе</span>}
@@ -474,78 +603,72 @@ export default function App() {
         </div>
       </section>
 
-      {/* FORM SECTION */}
       {actorId && (actorRole === "ADMIN" || actorRole === "WAREHOUSE") ? (
         <section className="grid-three">
-          {/* ВЫДАЧА */}
           <article className="panel">
-            <div className="panel-header"><h2>Выдача</h2><span>{busy === "issue" ? "Сохранение…" : "Новая запись"}</span></div>
-            <select value={issueForm.equipmentId} onChange={(e) => setIssueForm({ ...issueForm, equipmentId: e.target.value })}>
+            <div className="panel-header"><h2>Выдача</h2><span>{busy === "issue" ? "Сохранение..." : "Новая запись"}</span></div>
+            <select value={issueForm.equipmentId} onChange={(event) => setIssueForm({ ...issueForm, equipmentId: event.target.value })}>
               <option value="">Оборудование</option>
               {equipmentOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
             </select>
-            <input type="number" min={1} value={issueForm.quantity} onChange={(e) => setIssueForm({ ...issueForm, quantity: Number(e.target.value) })} placeholder="Количество" />
-            <select value={issueForm.warehouseId} onChange={(e) => setIssueForm({ ...issueForm, warehouseId: e.target.value })}>
+            <input type="number" min={1} value={issueForm.quantity} onChange={(event) => setIssueForm({ ...issueForm, quantity: Number(event.target.value) })} placeholder="Количество" />
+            <select value={issueForm.warehouseId} onChange={(event) => setIssueForm({ ...issueForm, warehouseId: event.target.value })}>
               <option value="">Склад списания</option>
               {data?.warehouses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
-            <select value={issueForm.projectId} onChange={(e) => setIssueForm({ ...issueForm, projectId: e.target.value })}>
+            <select value={issueForm.projectId} onChange={(event) => setIssueForm({ ...issueForm, projectId: event.target.value })}>
               <option value="">Проект / Ивент (опционально)</option>
               {data?.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
-            <select value={issueForm.assignedEmployeeId} onChange={(e) => setIssueForm({ ...issueForm, assignedEmployeeId: e.target.value })}>
+            <select value={issueForm.assignedEmployeeId} onChange={(event) => setIssueForm({ ...issueForm, assignedEmployeeId: event.target.value })}>
               <option value="">Ответственный сотрудник (опционально)</option>
               {data?.employees.map((item) => <option key={item.id} value={item.id}>{item.fullName}</option>)}
             </select>
-            <input value={issueForm.purpose} onChange={(e) => setIssueForm({ ...issueForm, purpose: e.target.value })} placeholder="Цель выдачи" />
-            <input type="datetime-local" value={issueForm.dueAt} onChange={(e) => setIssueForm({ ...issueForm, dueAt: e.target.value })} />
+            <input value={issueForm.purpose} onChange={(event) => setIssueForm({ ...issueForm, purpose: event.target.value })} placeholder="Цель выдачи" />
+            <input type="datetime-local" value={issueForm.dueAt} onChange={(event) => setIssueForm({ ...issueForm, dueAt: event.target.value })} />
             <button className="primary-btn" onClick={submitIssue} disabled={!issueForm.equipmentId || !issueForm.warehouseId || !issueForm.dueAt}>Оформить выдачу</button>
           </article>
 
-          {/* РЕМОНТ */}
           <article className="panel">
-            <div className="panel-header"><h2>Ремонт</h2><span>{busy === "repair" ? "Сохранение…" : "Отправить"}</span></div>
-            <select value={repairForm.equipmentId} onChange={(e) => setRepairForm({ ...repairForm, equipmentId: e.target.value })}>
+            <div className="panel-header"><h2>Ремонт</h2><span>{busy === "repair" ? "Сохранение..." : "Отправить"}</span></div>
+            <select value={repairForm.equipmentId} onChange={(event) => setRepairForm({ ...repairForm, equipmentId: event.target.value })}>
               <option value="">Оборудование</option>
               {equipmentOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
             </select>
-            <select value={repairForm.warehouseId} onChange={(e) => setRepairForm({ ...repairForm, warehouseId: e.target.value })}>
+            <select value={repairForm.warehouseId} onChange={(event) => setRepairForm({ ...repairForm, warehouseId: event.target.value })}>
               <option value="">Склад</option>
               {data?.warehouses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
-            <select value={repairForm.locationId} onChange={(e) => setRepairForm({ ...repairForm, locationId: e.target.value })}>
+            <select value={repairForm.locationId} onChange={(event) => setRepairForm({ ...repairForm, locationId: event.target.value })}>
               <option value="">Ячейка списания</option>
-              {data?.locations.filter(l => l.warehouseId === repairForm.warehouseId).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+              {data?.locations.filter((location) => location.warehouseId === repairForm.warehouseId).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
             </select>
-            <input value={repairForm.reason} onChange={(e) => setRepairForm({ ...repairForm, reason: e.target.value })} placeholder="Причина неисправности" />
-            <select value={repairForm.responsibleId} onChange={(e) => setRepairForm({ ...repairForm, responsibleId: e.target.value })}>
+            <input value={repairForm.reason} onChange={(event) => setRepairForm({ ...repairForm, reason: event.target.value })} placeholder="Причина неисправности" />
+            <select value={repairForm.responsibleId} onChange={(event) => setRepairForm({ ...repairForm, responsibleId: event.target.value })}>
               <option value="">Мастер (опционально)</option>
-              {data?.employees.filter(e => e.role === "ADMIN" || e.role === "WAREHOUSE").map((item) => <option key={item.id} value={item.id}>{item.fullName}</option>)}
+              {data?.employees.filter((employee) => employee.role === "ADMIN" || employee.role === "WAREHOUSE").map((item) => <option key={item.id} value={item.id}>{item.fullName}</option>)}
             </select>
             <button className="primary-btn" onClick={submitRepair} disabled={!repairForm.equipmentId || !repairForm.locationId || !repairForm.reason}>Передать в ремонт</button>
           </article>
 
-          {/* ЗАКУПКА */}
           <article className="panel">
-            <div className="panel-header"><h2>Закупка</h2><span>{busy === "purchase" ? "Сохранение…" : "Заявка"}</span></div>
-            <input value={purchaseForm.title} onChange={(e) => setPurchaseForm({ ...purchaseForm, title: e.target.value })} placeholder="Название заявки" />
-            <input value={purchaseForm.supplierName} onChange={(e) => setPurchaseForm({ ...purchaseForm, supplierName: e.target.value })} placeholder="Поставщик" />
-            <select value={purchaseForm.equipmentId} onChange={(e) => setPurchaseForm({ ...purchaseForm, equipmentId: e.target.value })}>
+            <div className="panel-header"><h2>Закупка</h2><span>{busy === "purchase" ? "Сохранение..." : "Заявка"}</span></div>
+            <input value={purchaseForm.title} onChange={(event) => setPurchaseForm({ ...purchaseForm, title: event.target.value })} placeholder="Название заявки" />
+            <input value={purchaseForm.supplierName} onChange={(event) => setPurchaseForm({ ...purchaseForm, supplierName: event.target.value })} placeholder="Поставщик" />
+            <select value={purchaseForm.equipmentId} onChange={(event) => setPurchaseForm({ ...purchaseForm, equipmentId: event.target.value })}>
               <option value="">Пополнить позицию (опционально)</option>
               {equipmentOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
             </select>
-            {!purchaseForm.equipmentId && <input value={purchaseForm.itemName} onChange={(e) => setPurchaseForm({ ...purchaseForm, itemName: e.target.value })} placeholder="Или название новой позиции" />}
-            <input type="number" min={1} value={purchaseForm.quantity} onChange={(e) => setPurchaseForm({ ...purchaseForm, quantity: Number(e.target.value) })} placeholder="Количество" />
+            {!purchaseForm.equipmentId && <input value={purchaseForm.itemName} onChange={(event) => setPurchaseForm({ ...purchaseForm, itemName: event.target.value })} placeholder="Или название новой позиции" />}
+            <input type="number" min={1} value={purchaseForm.quantity} onChange={(event) => setPurchaseForm({ ...purchaseForm, quantity: Number(event.target.value) })} placeholder="Количество" />
             <button className="primary-btn" onClick={submitPurchase} disabled={!purchaseForm.title || !purchaseForm.supplierName}>Создать закупку</button>
           </article>
         </section>
-      ) : actorId ? (
-        <div className="panel">
-          <p style={{ textAlign: "center", color: "var(--muted)" }}>Недостаточно прав для создания выдач, ремонтов и закупок. Необходима роль Администратора или Кладовщика.</p>
-        </div>
       ) : (
         <div className="panel">
-          <p style={{ textAlign: "center", color: "var(--muted)" }}>Авторизуйтесь, чтобы создавать выдачи, ремонты и закупки.</p>
+          <p style={{ textAlign: "center", color: "var(--muted)" }}>
+            Недостаточно прав для создания выдач, ремонтов и закупок. Нужна роль администратора или кладовщика.
+          </p>
         </div>
       )}
 
@@ -559,8 +682,8 @@ export default function App() {
                 <span><span className={`status-pill status-${issue.status.toLowerCase()}`}>{statusLabel(issue.status)}</span></span>
                 <small>Ответственный: {issue.assignedEmployee?.fullName ?? "Нет"} · Вернуть: {fmtDate(issue.dueAt)}</small>
                 <div style={{ marginTop: 6 }}>
-                  {issue.items.map((item, idx) => (
-                    <div key={idx} style={{ fontSize: 13 }}>- {item.equipment.name} {item.equipment.model} (x{item.quantity})</div>
+                  {issue.items.map((item, index) => (
+                    <div key={index} style={{ fontSize: 13 }}>- {item.equipment.name} {item.equipment.model} (x{item.quantity})</div>
                   ))}
                 </div>
                 {issue.status !== "RETURNED" && (actorRole === "ADMIN" || actorRole === "WAREHOUSE") ? (
@@ -573,7 +696,7 @@ export default function App() {
         </article>
 
         <article className="panel">
-          <div className="panel-header"><h2>Ремонт и Закупки</h2></div>
+          <div className="panel-header"><h2>Ремонт и закупки</h2></div>
           <div className="stack-list">
             {data?.repairs.map((repair) => (
               <div key={repair.id} className="list-row">
@@ -586,7 +709,7 @@ export default function App() {
               <div key={purchase.id} className="list-row">
                 <strong>{purchase.title}</strong>
                 <span><span className={`status-pill status-${purchase.status.toLowerCase()}`}>{statusLabel(purchase.status)}</span></span>
-                <small>Поставщик: {purchase.supplierName}. {purchase.items.map(i => `${i.itemName} (x${i.quantity})`).join(", ")}</small>
+                <small>Поставщик: {purchase.supplierName}. {purchase.items.map((item) => `${item.itemName} (x${item.quantity})`).join(", ")}</small>
               </div>
             ))}
             {(!data?.repairs.length && !data?.purchases.length) && <div className="muted-text">Нет ремонтов и закупок.</div>}

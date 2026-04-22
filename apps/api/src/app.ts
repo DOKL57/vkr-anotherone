@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PoolClient, QueryResultRow } from "pg";
 import { z } from "zod";
+import { verifyPassword } from "./auth.js";
 import { query, queryOne, withTransaction } from "./db.js";
 import { env } from "./env.js";
 import { parseIntentWithLlm } from "./llm.js";
@@ -112,6 +113,30 @@ type Actor = {
   fullName: string;
 };
 
+type AuthenticatedEmployee = {
+  id: string;
+  fullName: string;
+  role: RoleName;
+  username: string;
+};
+
+type AuthSession = {
+  token: string;
+  employeeId: string;
+  appUserId: string;
+  role: RoleName;
+  fullName: string;
+  username: string;
+};
+
+type LoginRow = EmployeeRow & {
+  passwordHash: string;
+};
+
+type AuthenticatedRequest = express.Request & {
+  auth?: AuthSession;
+};
+
 type OperationLogRow = {
   id: string;
   action: string;
@@ -124,6 +149,7 @@ type OperationLogRow = {
 
 const upload = multer();
 const sessionState = new Map<string, SessionContext>();
+const authSessions = new Map<string, AuthSession>();
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const webDistCandidates = [
   path.resolve(process.cwd(), "apps/web/dist"),
@@ -141,6 +167,68 @@ function asyncHandler<
   return (req: Req, res: Res, next: express.NextFunction) => {
     Promise.resolve(fn(req, res, next)).catch(next);
   };
+}
+
+class HttpError extends Error {
+  statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+function asRoleName(value: string | null): RoleName {
+  if (value === "ADMIN" || value === "WAREHOUSE" || value === "SOUND_ENGINEER") {
+    return value;
+  }
+  throw new HttpError(500, "У пользователя неверная роль.");
+}
+
+function toAuthenticatedEmployee(session: AuthSession): AuthenticatedEmployee {
+  return {
+    id: session.employeeId,
+    fullName: session.fullName,
+    role: session.role,
+    username: session.username
+  };
+}
+
+function getBearerToken(req: express.Request) {
+  const header = req.headers.authorization;
+  if (!header) {
+    return null;
+  }
+
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return match?.[1]?.trim() ?? null;
+}
+
+function requireAuthSession(req: AuthenticatedRequest) {
+  if (req.auth) {
+    return req.auth;
+  }
+
+  const token = getBearerToken(req);
+  if (!token) {
+    throw new HttpError(401, "Нет прав. Требуется авторизация.");
+  }
+
+  const session = authSessions.get(token);
+  if (!session) {
+    throw new HttpError(401, "Нет прав. Сессия истекла, войдите снова.");
+  }
+
+  req.auth = session;
+  return session;
+}
+
+function resolveActorId(req: AuthenticatedRequest, actorId?: string | null) {
+  const session = requireAuthSession(req);
+  if (actorId && actorId !== session.employeeId) {
+    throw new HttpError(403, "Нельзя выполнять операции от имени другого сотрудника.");
+  }
+  return session.employeeId;
 }
 
 const equipmentCreateSchema = z.object({
@@ -1773,12 +1861,91 @@ export function createApp() {
     });
   }));
 
-  app.get("/api/bootstrap", asyncHandler(async (_req, res) => {
-    const data = await getBootstrapData();
-    res.json(data);
+  app.post("/api/auth/login", asyncHandler(async (req, res) => {
+    const input = z.object({
+      username: z.string().min(1),
+      password: z.string().min(1)
+    }).parse(req.body);
+
+    const user = await queryOne<LoginRow>(
+      `
+        SELECT
+          e.id,
+          e.full_name AS "fullName",
+          e.phone,
+          e.email,
+          e.position,
+          ur.name AS role,
+          ur.id AS "roleId",
+          au.id AS "appUserId",
+          au.username,
+          au.password_hash AS "passwordHash"
+        FROM app_user au
+        JOIN employee e
+          ON e.id = au.employee_id
+        JOIN user_role ur
+          ON ur.id = au.role_id
+        WHERE LOWER(au.username) = LOWER($1)
+          AND au.status = 'ACTIVE'
+        ORDER BY au.created_at ASC
+        LIMIT 1
+      `,
+      [input.username.trim()]
+    );
+
+    if (!user || !verifyPassword(input.password, user.passwordHash)) {
+      throw new HttpError(401, "Неверный логин или пароль.");
+    }
+
+    const appUserId = user.appUserId;
+    if (!appUserId || !user.username) {
+      throw new HttpError(500, "У пользователя нет системного аккаунта.");
+    }
+
+    const session: AuthSession = {
+      token: randomUUID(),
+      employeeId: user.id,
+      appUserId,
+      role: asRoleName(user.role),
+      fullName: user.fullName,
+      username: user.username
+    };
+
+    authSessions.set(session.token, session);
+
+    await query(
+      "INSERT INTO operation_log (id, user_id, action, details) VALUES (gen_random_uuid()::text, $1, 'LOGIN', $2::jsonb)",
+      [session.appUserId, JSON.stringify({ username: session.username })]
+    );
+
+    res.json({
+      token: session.token,
+      employee: toAuthenticatedEmployee(session)
+    });
   }));
 
-  app.post("/api/auth/demo", asyncHandler(async (_req, res) => {
+  app.post("/api/auth/logout", asyncHandler(async (req, res) => {
+    const session = requireAuthSession(req as AuthenticatedRequest);
+    authSessions.delete(session.token);
+
+    await query(
+      "INSERT INTO operation_log (id, user_id, action, details) VALUES (gen_random_uuid()::text, $1, 'LOGOUT', $2::jsonb)",
+      [session.appUserId, JSON.stringify({ username: session.username })]
+    );
+
+    res.json({ ok: true });
+  }));
+
+  app.get("/api/bootstrap", asyncHandler(async (req, res) => {
+    const session = requireAuthSession(req as AuthenticatedRequest);
+    const data = await getBootstrapData();
+    res.json({
+      ...data,
+      currentUser: toAuthenticatedEmployee(session)
+    });
+  }));
+
+  app.post("/api/auth/demo-disabled", asyncHandler(async (_req, res) => {
     const employee = await queryOne<EmployeeRow>(
       `
         SELECT DISTINCT ON (e.id)
@@ -1818,44 +1985,54 @@ export function createApp() {
   }));
 
   app.post("/api/equipment", asyncHandler(async (req, res) => {
-    const created = await createEquipment(req.body);
+    const body = typeof req.body === "object" && req.body ? { ...req.body } as Record<string, unknown> : {};
+    body.actorId = resolveActorId(req as AuthenticatedRequest, typeof body.actorId === "string" ? body.actorId : undefined);
+    const created = await createEquipment(body);
     res.status(201).json(created);
   }));
 
   app.post("/api/issues", asyncHandler(async (req, res) => {
-    const created = await createIssue(req.body);
+    const body = typeof req.body === "object" && req.body ? { ...req.body } as Record<string, unknown> : {};
+    body.actorId = resolveActorId(req as AuthenticatedRequest, typeof body.actorId === "string" ? body.actorId : undefined);
+    const created = await createIssue(body);
     res.status(201).json(created);
   }));
 
   app.post("/api/issues/:id/return", asyncHandler(async (req, res) => {
-    const body = z.object({ actorId: z.string().min(1) }).parse(req.body);
-    const updated = await returnIssue(String(req.params.id), body.actorId);
+    const body = z.object({ actorId: z.string().optional() }).parse(req.body);
+    const updated = await returnIssue(String(req.params.id), resolveActorId(req as AuthenticatedRequest, body.actorId));
     res.json(updated);
   }));
 
   app.post("/api/repairs", asyncHandler(async (req, res) => {
-    const created = await createRepair(req.body);
+    const body = typeof req.body === "object" && req.body ? { ...req.body } as Record<string, unknown> : {};
+    body.actorId = resolveActorId(req as AuthenticatedRequest, typeof body.actorId === "string" ? body.actorId : undefined);
+    const created = await createRepair(body);
     res.status(201).json(created);
   }));
 
   app.post("/api/repairs/:id/complete", asyncHandler(async (req, res) => {
-    const body = z.object({ actorId: z.string().min(1) }).parse(req.body);
-    const updated = await completeRepair(String(req.params.id), body.actorId);
+    const body = z.object({ actorId: z.string().optional() }).parse(req.body);
+    const updated = await completeRepair(String(req.params.id), resolveActorId(req as AuthenticatedRequest, body.actorId));
     res.json(updated);
   }));
 
   app.post("/api/purchases", asyncHandler(async (req, res) => {
-    const created = await createPurchase(req.body);
+    const body = typeof req.body === "object" && req.body ? { ...req.body } as Record<string, unknown> : {};
+    body.actorId = resolveActorId(req as AuthenticatedRequest, typeof body.actorId === "string" ? body.actorId : undefined);
+    const created = await createPurchase(body);
     res.status(201).json(created);
   }));
 
   app.post("/api/purchases/:id/receive", asyncHandler(async (req, res) => {
-    const body = z.object({ actorId: z.string().min(1) }).parse(req.body);
-    const updated = await receivePurchase(String(req.params.id), body.actorId);
+    const body = z.object({ actorId: z.string().optional() }).parse(req.body);
+    const updated = await receivePurchase(String(req.params.id), resolveActorId(req as AuthenticatedRequest, body.actorId));
     res.json(updated);
   }));
 
   const parseUploadHandler = async (req: express.Request, res: express.Response) => {
+    requireAuthSession(req as AuthenticatedRequest);
+
     const schema = z.object({
       text: z.string().optional()
     });
@@ -1884,10 +2061,10 @@ export function createApp() {
   app.post("/api/uploads/parse-list", upload.single("file"), asyncHandler(parseUploadHandler));
 
   app.post("/api/ai/query", asyncHandler(async (req, res) => {
+    const session = requireAuthSession(req as AuthenticatedRequest);
     const schema = z.object({
       message: z.string().optional(),
       query: z.string().optional(),
-      employeeId: z.string().optional(),
       sessionId: z.string().nullable().optional()
     });
 
@@ -1899,8 +2076,9 @@ export function createApp() {
 
     const result = await askAssistant({
       ...input,
+      employeeId: session.employeeId,
       message,
-      sessionKey: input.sessionId ?? `employee:${input.employeeId ?? "guest"}`
+      sessionKey: input.sessionId ?? `employee:${session.employeeId}`
     });
     res.json(result);
   }));
@@ -1919,6 +2097,10 @@ export function createApp() {
       res: express.Response,
       _next: express.NextFunction
     ) => {
+      if (error instanceof HttpError) {
+        res.status(error.statusCode).json({ error: error.message });
+        return;
+      }
       const message = error instanceof Error ? error.message : "Внутренняя ошибка сервера.";
       const status = /валид|прав|найден|остатк|ячейк|нужен/i.test(message) ? 400 : 500;
       res.status(status).json({ error: message });

@@ -150,8 +150,10 @@ const statements = [
   `CREATE TABLE app_user (
     id TEXT PRIMARY KEY,
     role_id TEXT NOT NULL REFERENCES user_role(id) ON DELETE RESTRICT,
-    employee_id TEXT REFERENCES employee(id) ON DELETE SET NULL,
-    username TEXT,
+    employee_id TEXT UNIQUE REFERENCES employee(id) ON DELETE SET NULL,
+    telegram_id BIGINT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`,
