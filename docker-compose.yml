@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sound_rental}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: ./apps/api/Dockerfile
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/sound_rental?schema=public}
+      PORT: ${PORT:-3001}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      LOCAL_LLM_URL: ${LOCAL_LLM_URL:-http://host.docker.internal:1234/v1}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-local-model}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-replace_me}
+      TELEGRAM_AUTH_DATE_TOLERANCE_SEC: ${TELEGRAM_AUTH_DATE_TOLERANCE_SEC:-86400}
+    ports:
+      - "3001:3001"
+
+  web:
+    build:
+      context: .
+      dockerfile: ./apps/web/Dockerfile
+    depends_on:
+      - api
+    environment:
+      VITE_API_URL: http://localhost:3001
+      VITE_TELEGRAM_BOT_USERNAME: sound_rental_bot
+    ports:
+      - "5173:5173"
+
+  bot:
+    build:
+      context: .
+      dockerfile: ./apps/bot/Dockerfile
+    depends_on:
+      - api
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-replace_me}
+      TELEGRAM_WEBAPP_URL: ${TELEGRAM_WEBAPP_URL:-http://localhost:5173}
+      API_URL: ${API_URL:-http://api:3001}
+
+volumes:
+  postgres_data:

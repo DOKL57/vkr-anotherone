@@ -1,0 +1,281 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EmployeeRole {
+  ADMIN
+  WAREHOUSE
+  SOUND_ENGINEER
+}
+
+enum EquipmentStatus {
+  AVAILABLE
+  RESERVED
+  IN_USE
+  REPAIR
+  RETIRED
+}
+
+enum IssueStatus {
+  OPEN
+  CLOSED
+  PARTIAL
+}
+
+enum RepairStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+enum PurchaseStatus {
+  DRAFT
+  REQUESTED
+  ORDERED
+  DELIVERED
+  CANCELLED
+}
+
+enum OperationType {
+  ISSUE
+  RETURN
+  TRANSFER
+  REPAIR_SENT
+  REPAIR_RETURN
+  PURCHASE_REQUEST
+  PURCHASE_RECEIPT
+  STOCK_ADJUSTMENT
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model EquipmentCategory {
+  id          String              @id @default(cuid())
+  name        String
+  description String?
+  parentId    String?
+  parent      EquipmentCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children    EquipmentCategory[] @relation("CategoryTree")
+  equipment   EquipmentItem[]
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+}
+
+model Warehouse {
+  id             String             @id @default(cuid())
+  name           String
+  description    String?
+  locations      StorageLocation[]
+  balances       InventoryBalance[]
+  operationsFrom OperationHistory[] @relation("OpFromWarehouse")
+  operationsTo   OperationHistory[] @relation("OpToWarehouse")
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+}
+
+model StorageLocation {
+  id             String             @id @default(cuid())
+  warehouseId    String
+  warehouse      Warehouse          @relation(fields: [warehouseId], references: [id])
+  zone           String
+  row            String?
+  rack           String?
+  cell           String?
+  label          String
+  balances       InventoryBalance[]
+  operationsFrom OperationHistory[] @relation("OpFromLocation")
+  operationsTo   OperationHistory[] @relation("OpToLocation")
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+}
+
+model EquipmentItem {
+  id           String            @id @default(cuid())
+  type         String
+  model        String
+  serialNumber String?           @unique
+  specs        Json
+  status       EquipmentStatus   @default(AVAILABLE)
+  notes        String?
+  categoryId   String
+  category     EquipmentCategory @relation(fields: [categoryId], references: [id])
+  balances     InventoryBalance[]
+  issues       IssueRecord[]
+  repairs      RepairRecord[]
+  purchases    PurchaseRequest[]
+  operations   OperationHistory[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+}
+
+model InventoryBalance {
+  id              String           @id @default(cuid())
+  equipmentItemId String
+  warehouseId     String
+  locationId      String?
+  quantity        Int
+  equipmentItem   EquipmentItem    @relation(fields: [equipmentItemId], references: [id])
+  warehouse       Warehouse        @relation(fields: [warehouseId], references: [id])
+  location        StorageLocation? @relation(fields: [locationId], references: [id])
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@unique([equipmentItemId, warehouseId, locationId])
+}
+
+model Employee {
+  id               String        @id @default(cuid())
+  fullName         String
+  role             EmployeeRole
+  phone            String?
+  email            String?
+  isActive         Boolean       @default(true)
+  telegramUsers    TelegramUser[]
+  issuesReceived   IssueRecord[] @relation("IssueEmployee")
+  issuesIssuedBy   IssueRecord[] @relation("IssueIssuedBy")
+  issuesAcceptedBy IssueRecord[] @relation("IssueAcceptedBy")
+  repairs          RepairRecord[]
+  purchases        PurchaseRequest[]
+  operations       OperationHistory[]
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+}
+
+model TelegramUser {
+  id         String       @id @default(cuid())
+  telegramId BigInt       @unique
+  username   String?
+  firstName  String
+  lastName   String?
+  role       EmployeeRole
+  employeeId String?
+  employee   Employee?    @relation(fields: [employeeId], references: [id])
+  sessions   ChatSession[]
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+}
+
+model Project {
+  id        String        @id @default(cuid())
+  name      String
+  venue     String?
+  customer  String?
+  startsAt  DateTime?
+  endsAt    DateTime?
+  issues    IssueRecord[]
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+model IssueRecord {
+  id              String        @id @default(cuid())
+  equipmentItemId String
+  quantity        Int
+  employeeId      String?
+  projectId       String?
+  dueAt           DateTime
+  returnedAt      DateTime?
+  status          IssueStatus   @default(OPEN)
+  issuedById      String
+  acceptedById    String?
+  notes           String?
+  equipmentItem   EquipmentItem @relation(fields: [equipmentItemId], references: [id])
+  employee        Employee?     @relation("IssueEmployee", fields: [employeeId], references: [id])
+  project         Project?      @relation(fields: [projectId], references: [id])
+  issuedBy        Employee      @relation("IssueIssuedBy", fields: [issuedById], references: [id])
+  acceptedBy      Employee?     @relation("IssueAcceptedBy", fields: [acceptedById], references: [id])
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model RepairRecord {
+  id              String        @id @default(cuid())
+  equipmentItemId String
+  reason          String
+  diagnosis       String?
+  etaDate         DateTime?
+  readyAt         DateTime?
+  status          RepairStatus  @default(OPEN)
+  responsibleId   String?
+  equipmentItem   EquipmentItem @relation(fields: [equipmentItemId], references: [id])
+  responsible     Employee?     @relation(fields: [responsibleId], references: [id])
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model PurchaseRequest {
+  id                String         @id @default(cuid())
+  equipmentItemId   String?
+  title             String
+  supplier          String
+  cost              Decimal        @db.Decimal(12, 2)
+  plannedDeliveryAt DateTime?
+  actualDeliveryAt  DateTime?
+  linkedReason      String?
+  usageStats        String?
+  status            PurchaseStatus @default(DRAFT)
+  requesterId       String?
+  equipmentItem     EquipmentItem? @relation(fields: [equipmentItemId], references: [id])
+  requester         Employee?      @relation(fields: [requesterId], references: [id])
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+}
+
+model OperationHistory {
+  id              String           @id @default(cuid())
+  type            OperationType
+  equipmentItemId String?
+  quantity        Int
+  fromWarehouseId String?
+  fromLocationId  String?
+  toWarehouseId   String?
+  toLocationId    String?
+  actorEmployeeId String?
+  metadata        Json?
+  equipmentItem   EquipmentItem?   @relation(fields: [equipmentItemId], references: [id])
+  fromWarehouse   Warehouse?       @relation("OpFromWarehouse", fields: [fromWarehouseId], references: [id])
+  fromLocation    StorageLocation? @relation("OpFromLocation", fields: [fromLocationId], references: [id])
+  toWarehouse     Warehouse?       @relation("OpToWarehouse", fields: [toWarehouseId], references: [id])
+  toLocation      StorageLocation? @relation("OpToLocation", fields: [toLocationId], references: [id])
+  actorEmployee   Employee?        @relation(fields: [actorEmployeeId], references: [id])
+  createdAt       DateTime         @default(now())
+}
+
+model ChatSession {
+  id             String        @id @default(cuid())
+  telegramUserId String?
+  title          String?
+  lastIntent     String?
+  contextJson    Json?
+  telegramUser   TelegramUser? @relation(fields: [telegramUserId], references: [id])
+  messages       ChatMessage[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  sessionId String
+  role      MessageRole
+  content   String
+  session   ChatSession @relation(fields: [sessionId], references: [id])
+  createdAt DateTime    @default(now())
+}
+
+model QueryCache {
+  id           String   @id @default(cuid())
+  cacheKey     String   @unique
+  responseJson Json
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+}

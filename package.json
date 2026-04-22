@@ -1,0 +1,16 @@
+{
+  "name": "sound-rental-platform",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @sound/api && npm run build -w @sound/web && npm run build -w @sound/bot",
+    "dev:api": "npm run dev -w @sound/api",
+    "dev:web": "npm run dev -w @sound/web",
+    "dev:bot": "npm run dev -w @sound/bot",
+    "tunnel:start": "node scripts/public-tunnel.mjs start",
+    "tunnel:stop": "node scripts/public-tunnel.mjs stop"
+  }
+}
