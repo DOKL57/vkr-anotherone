@@ -169,3 +169,11 @@ bash ./run-all.sh stop
 bash ./run-all.sh logs
 bash ./run-all.sh reset
 ```
+
+## Telegram bot
+
+В проекте есть второй frontend: обычный Telegram bot, не Mini App.
+
+Bot использует тот же backend, что и сайт: ту же авторизацию, роли, AI-запросы, каталог, выдачи, ремонты и закупки. Если `TELEGRAM_BOT_TOKEN` не задан, старый запуск сайта и API не ломается: в dev bot пропускается, в Docker bot остаётся выключенным.
+
+Подробная простая инструкция: [docs/telegram-bot.md](docs/telegram-bot.md).

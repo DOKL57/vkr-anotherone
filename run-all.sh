@@ -73,6 +73,10 @@ wait_for_postgres() {
 
 cmd_start() {
   ensure_env
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
   require_docker
   echo "[run-all] starting docker stack..."
   docker compose up -d --build
@@ -80,6 +84,11 @@ cmd_start() {
   echo "  Web:    http://localhost:5173"
   echo "  API:    http://localhost:3001"
   echo "  Health: http://localhost:3001/health"
+  if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    echo "  Bot:    Telegram long polling enabled"
+  else
+    echo "  Bot:    disabled, set TELEGRAM_BOT_TOKEN in .env"
+  fi
 }
 
 cmd_stop() {
@@ -132,8 +141,12 @@ cmd_dev() {
   export PORT="${PORT:-3001}"
   export HOST="${HOST:-0.0.0.0}"
   export API_URL="${API_URL:-http://localhost:3001}"
+  export BOT_LOCAL_API_URL="${BOT_LOCAL_API_URL:-http://localhost:3001}"
   export VITE_API_URL="${VITE_API_URL:-http://localhost:3001}"
   export VITE_API_PROXY_TARGET="${VITE_API_PROXY_TARGET:-http://localhost:3001}"
+  export TELEGRAM_BOT_API_URL="${TELEGRAM_BOT_API_URL:-https://api.telegram.org}"
+  export TELEGRAM_BOT_SESSION_FILE="${TELEGRAM_BOT_SESSION_FILE:-$ROOT_DIR/.runtime/telegram-bot-sessions.json}"
+  export BOT_POLLING_INTERVAL="${BOT_POLLING_INTERVAL:-1000}"
   export CORS_ORIGIN="${CORS_ORIGIN:-http://localhost:5173}"
   export LOCAL_LLM_MODEL="${LOCAL_LLM_MODEL:-auto}"
   export DATABASE_URL="${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/sound_rental?schema=public}"
@@ -162,11 +175,23 @@ cmd_dev() {
   npm run dev:web &
   WEB_PID=$!
 
+  BOT_PID=""
+  if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    echo "[run-all] start telegram bot..."
+    API_URL="$BOT_LOCAL_API_URL" npm run dev:bot &
+    BOT_PID=$!
+  else
+    echo "[run-all] telegram bot skipped: TELEGRAM_BOT_TOKEN is empty"
+  fi
+
   cleanup() {
     echo
     echo "[run-all] shutting down..."
     kill "$API_PID" 2>/dev/null || true
     kill "$WEB_PID" 2>/dev/null || true
+    if [ -n "$BOT_PID" ]; then
+      kill "$BOT_PID" 2>/dev/null || true
+    fi
     docker compose stop postgres 2>/dev/null || true
   }
 
@@ -176,6 +201,11 @@ cmd_dev() {
   echo "  Web:    http://localhost:5173"
   echo "  API:    http://localhost:3001"
   echo "  Health: http://localhost:3001/health"
+  if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    echo "  Bot:    Telegram long polling enabled"
+  else
+    echo "  Bot:    disabled, set TELEGRAM_BOT_TOKEN in .env"
+  fi
   echo "  LLM:    ${LOCAL_LLM_URL:-http://localhost:1234/v1}"
 
   wait

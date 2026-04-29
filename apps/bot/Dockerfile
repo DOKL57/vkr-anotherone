@@ -11,9 +11,6 @@ RUN npm ci
 
 COPY . .
 
-RUN npm run build -w @sound/web
-RUN npm run build -w @sound/api
+RUN npm run build -w @sound/bot
 
-EXPOSE 3001
-
-CMD ["sh", "-c", "node apps/api/dist/db/init-db.js && node apps/api/dist/db/seed.js && node apps/api/dist/src/index.js"]
+CMD ["npm", "run", "start", "-w", "@sound/bot"]

@@ -39,7 +39,7 @@ services:
     ports:
       - "3001:3001"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       start_period: 20s
       interval: 5s
       timeout: 5s
@@ -59,5 +59,30 @@ services:
     ports:
       - "5173:5173"
 
+  bot:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: ./apps/bot/Dockerfile
+    command: >
+      sh -c "if [ -z \"$$TELEGRAM_BOT_TOKEN\" ]; then
+        echo '[bot] disabled: TELEGRAM_BOT_TOKEN is empty';
+        tail -f /dev/null;
+      else
+        npm run start -w @sound/bot;
+      fi"
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_URL: ${API_URL:-http://api:3001}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_API_URL: ${TELEGRAM_BOT_API_URL:-https://api.telegram.org}
+      TELEGRAM_BOT_SESSION_FILE: ${TELEGRAM_BOT_SESSION_FILE:-/app/.runtime/telegram-bot-sessions.json}
+      BOT_POLLING_INTERVAL: ${BOT_POLLING_INTERVAL:-1000}
+    volumes:
+      - bot_runtime:/app/.runtime
+
 volumes:
   postgres_data:
+  bot_runtime:
