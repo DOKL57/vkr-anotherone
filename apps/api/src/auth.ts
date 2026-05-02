@@ -26,6 +26,17 @@ const employeeDirectoryCandidates = [
 ];
 
 const validRoles = new Set<AuthRoleName>(["ADMIN", "WAREHOUSE", "SOUND_ENGINEER"]);
+const requiredEmployeeHeaders = [
+  "role",
+  "full_name",
+  "position",
+  "username",
+  "password",
+  "phone",
+  "email",
+  "telegram_id",
+  "status"
+];
 
 export function resolveEmployeeDirectoryPath() {
   const found = employeeDirectoryCandidates.find((candidate) => fs.existsSync(candidate));
@@ -57,59 +68,66 @@ function normalizeNullable(value: string | undefined) {
   return normalized;
 }
 
+function findEmployeeTable(lines: string[]) {
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (!lines[index]?.startsWith("|")) {
+      continue;
+    }
+
+    const header = splitMarkdownRow(lines[index]!);
+    const separator = lines[index + 1]!;
+    if (!isSeparatorRow(separator)) {
+      continue;
+    }
+
+    const headerIndex = new Map(header.map((name, cellIndex) => [name.toLowerCase(), cellIndex]));
+    if (requiredEmployeeHeaders.every((name) => headerIndex.has(name))) {
+      const tableLines: string[] = [];
+      for (const line of lines.slice(index + 2)) {
+        if (!line.startsWith("|")) {
+          break;
+        }
+        tableLines.push(line);
+      }
+      return { headerIndex, tableLines };
+    }
+  }
+
+  return null;
+}
+
 export function readEmployeeDirectory() {
   const content = fs.readFileSync(resolveEmployeeDirectoryPath(), "utf-8");
-  const tableLines = content
+  const lines = content
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("|"));
+    .map((line) => line.trim());
 
-  if (tableLines.length < 3) {
+  if (lines.filter((line) => line.startsWith("|")).length < 3) {
     throw new Error("Employee directory markdown table is empty.");
   }
 
-  const header = splitMarkdownRow(tableLines[0]);
-  const separator = tableLines[1];
-  if (!isSeparatorRow(separator)) {
-    throw new Error("Employee directory markdown table header is invalid.");
-  }
-
-  const headerIndex = new Map(header.map((name, index) => [name.toLowerCase(), index]));
-  const requiredHeaders = [
-    "role",
-    "full_name",
-    "position",
-    "username",
-    "password",
-    "phone",
-    "email",
-    "telegram_id",
-    "status"
-  ];
-
-  for (const name of requiredHeaders) {
-    if (!headerIndex.has(name)) {
-      throw new Error(`Employee directory column "${name}" is missing.`);
-    }
+  const employeeTable = findEmployeeTable(lines);
+  if (!employeeTable) {
+    throw new Error(`Employee directory table with columns ${requiredEmployeeHeaders.join(", ")} is missing.`);
   }
 
   const entries: EmployeeDirectoryEntry[] = [];
 
-  for (const line of tableLines.slice(2)) {
+  for (const line of employeeTable.tableLines) {
     if (isSeparatorRow(line)) continue;
     const cells = splitMarkdownRow(line);
     if (cells.every((cell) => cell.length === 0)) continue;
 
-    const role = cells[headerIndex.get("role")!]!.toUpperCase() as AuthRoleName;
+    const role = cells[employeeTable.headerIndex.get("role")!]!.toUpperCase() as AuthRoleName;
     if (!validRoles.has(role)) {
       throw new Error(`Unsupported role "${role}" in employee directory.`);
     }
 
-    const username = cells[headerIndex.get("username")!]!.trim().toLowerCase();
-    const password = cells[headerIndex.get("password")!]!.trim();
-    const fullName = cells[headerIndex.get("full_name")!]!.trim();
-    const position = cells[headerIndex.get("position")!]!.trim();
-    const status = cells[headerIndex.get("status")!]!.trim().toUpperCase();
+    const username = cells[employeeTable.headerIndex.get("username")!]!.trim().toLowerCase();
+    const password = cells[employeeTable.headerIndex.get("password")!]!.trim();
+    const fullName = cells[employeeTable.headerIndex.get("full_name")!]!.trim();
+    const position = cells[employeeTable.headerIndex.get("position")!]!.trim();
+    const status = cells[employeeTable.headerIndex.get("status")!]!.trim().toUpperCase();
 
     if (!username || !password || !fullName || !position || !status) {
       throw new Error(`Employee directory row is incomplete: ${line}`);
@@ -121,9 +139,9 @@ export function readEmployeeDirectory() {
       position,
       username,
       password,
-      phone: normalizeNullable(cells[headerIndex.get("phone")!]),
-      email: normalizeNullable(cells[headerIndex.get("email")!]),
-      telegramId: normalizeNullable(cells[headerIndex.get("telegram_id")!]),
+      phone: normalizeNullable(cells[employeeTable.headerIndex.get("phone")!]),
+      email: normalizeNullable(cells[employeeTable.headerIndex.get("email")!]),
+      telegramId: normalizeNullable(cells[employeeTable.headerIndex.get("telegram_id")!]),
       status
     });
   }

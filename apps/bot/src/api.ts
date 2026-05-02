@@ -24,6 +24,7 @@ export type DashboardSummary = {
 export type Employee = { id: string; fullName: string; role: string };
 export type Warehouse = { id: string; name: string };
 export type Project = { id: string; name: string };
+export type Category = { id: string; name: string };
 export type StorageLocation = { id: string; label: string; warehouseId: string };
 
 export type Equipment = {
@@ -33,6 +34,7 @@ export type Equipment = {
   model: string;
   serialNumber?: string | null;
   status: string;
+  categoryId: string;
   categoryName: string;
   available: number;
   inUse: number;
@@ -67,12 +69,28 @@ export type Purchase = {
   title: string;
   supplierName: string;
   plannedDeliveryAt?: string | null;
+  actualDeliveryAt?: string | null;
   status: string;
-  items: Array<{ itemName: string; quantity: number }>;
+  items: Array<{
+    mode: "existing" | "new";
+    equipmentId?: string;
+    itemName: string;
+    quantity: number;
+    locationId?: string;
+    locationLabel?: string;
+    categoryName?: string;
+    name?: string;
+    type?: string;
+    model?: string;
+    manufacturer?: string;
+    serialNumber?: string;
+    receivedEquipmentId?: string;
+  }>;
 };
 
 export type BootstrapData = {
   dashboard: DashboardSummary;
+  categories: Category[];
   employees: Employee[];
   projects: Project[];
   warehouses: Warehouse[];

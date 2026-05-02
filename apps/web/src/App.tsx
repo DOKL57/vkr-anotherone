@@ -30,13 +30,16 @@ type Equipment = {
   name: string;
   type: string;
   model: string;
+  manufacturer?: string | null;
   serialNumber?: string | null;
   status: string;
+  categoryId: string;
   categoryName: string;
   available: number;
   inUse: number;
   inRepair: number;
   totalQuantity: number;
+  minStock: number;
   technicalSpecs: Record<string, string>;
   locations: Array<{ id: string; quantity: number; label: string }>;
 };
@@ -67,8 +70,23 @@ type Purchase = {
   title: string;
   supplierName: string;
   plannedDeliveryAt?: string | null;
+  actualDeliveryAt?: string | null;
   status: string;
-  items: Array<{ itemName: string; quantity: number }>;
+  items: Array<{
+    mode: "existing" | "new";
+    equipmentId?: string;
+    itemName: string;
+    quantity: number;
+    locationId?: string;
+    locationLabel?: string;
+    categoryName?: string;
+    name?: string;
+    type?: string;
+    model?: string;
+    manufacturer?: string;
+    serialNumber?: string;
+    receivedEquipmentId?: string;
+  }>;
 };
 
 type BootstrapData = {
@@ -119,13 +137,23 @@ const emptyRepairForm = {
 };
 
 const emptyPurchaseForm = {
+  mode: "existing" as "existing" | "new",
   title: "",
   supplierName: "",
   plannedDeliveryAt: "",
   reason: "",
   equipmentId: "",
+  locationId: "",
   itemName: "",
-  quantity: 1
+  quantity: 1,
+  categoryId: "",
+  name: "",
+  type: "",
+  model: "",
+  manufacturer: "",
+  serialNumber: "",
+  description: "",
+  minStock: 0
 };
 
 function fmtDate(value?: string | null) {
@@ -262,6 +290,28 @@ export default function App() {
     [data]
   );
 
+  const locationOptions = useMemo(
+    () => (data?.locations ?? []).map((location) => {
+      const warehouse = data?.warehouses.find((item) => item.id === location.warehouseId);
+      return {
+        id: location.id,
+        label: `${warehouse?.name ?? "Склад"}: ${location.label}`
+      };
+    }),
+    [data]
+  );
+
+  const selectedPurchaseEquipment = useMemo(
+    () => data?.equipment.find((item) => item.id === purchaseForm.equipmentId),
+    [data, purchaseForm.equipmentId]
+  );
+
+  const purchaseReady =
+    Boolean(purchaseForm.title && purchaseForm.supplierName && purchaseForm.locationId && purchaseForm.quantity > 0) &&
+    (purchaseForm.mode === "existing"
+      ? Boolean(purchaseForm.equipmentId)
+      : Boolean(purchaseForm.categoryId && purchaseForm.name && purchaseForm.type && purchaseForm.model));
+
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAuthBusy(true);
@@ -396,6 +446,32 @@ export default function App() {
     setBusy("purchase");
     setError(null);
     try {
+      const item =
+        purchaseForm.mode === "existing"
+          ? {
+              mode: "existing",
+              equipmentId: purchaseForm.equipmentId,
+              itemName: selectedPurchaseEquipment
+                ? `${selectedPurchaseEquipment.name} ${selectedPurchaseEquipment.model}`
+                : "Пополнение склада",
+              quantity: Number(purchaseForm.quantity),
+              locationId: purchaseForm.locationId
+            }
+          : {
+              mode: "new",
+              itemName: purchaseForm.itemName || `${purchaseForm.name} ${purchaseForm.model}`,
+              quantity: Number(purchaseForm.quantity),
+              locationId: purchaseForm.locationId,
+              categoryId: purchaseForm.categoryId,
+              name: purchaseForm.name,
+              type: purchaseForm.type,
+              model: purchaseForm.model,
+              manufacturer: purchaseForm.manufacturer || undefined,
+              serialNumber: purchaseForm.serialNumber || undefined,
+              description: purchaseForm.description || undefined,
+              minStock: Number(purchaseForm.minStock) || 0
+            };
+
       await fetchJson("/api/purchases", {
         method: "POST",
         body: JSON.stringify({
@@ -406,16 +482,27 @@ export default function App() {
             ? new Date(purchaseForm.plannedDeliveryAt).toISOString()
             : undefined,
           reason: purchaseForm.reason || "Закупка оборудования",
-          items: [
-            {
-              equipmentId: purchaseForm.equipmentId || undefined,
-              itemName: purchaseForm.itemName || "Новая позиция",
-              quantity: Number(purchaseForm.quantity)
-            }
-          ]
+          items: [item]
         })
       });
       setPurchaseForm(emptyPurchaseForm);
+      await loadData();
+    } catch (err) {
+      setError(formatUserError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function receivePurchase(purchaseId: string) {
+    if (!actorId) return setError("Нет прав.");
+    setBusy(purchaseId);
+    setError(null);
+    try {
+      await fetchJson(`/api/purchases/${purchaseId}/receive`, {
+        method: "POST",
+        body: JSON.stringify({ actorId })
+      });
       await loadData();
     } catch (err) {
       setError(formatUserError(err));
@@ -697,13 +784,48 @@ export default function App() {
             <div className="panel-header"><h2>Закупка</h2><span>{busy === "purchase" ? "Сохранение..." : "Заявка"}</span></div>
             <input value={purchaseForm.title} onChange={(event) => setPurchaseForm({ ...purchaseForm, title: event.target.value })} placeholder="Название заявки" />
             <input value={purchaseForm.supplierName} onChange={(event) => setPurchaseForm({ ...purchaseForm, supplierName: event.target.value })} placeholder="Поставщик" />
-            <select value={purchaseForm.equipmentId} onChange={(event) => setPurchaseForm({ ...purchaseForm, equipmentId: event.target.value })}>
-              <option value="">Пополнить позицию (опционально)</option>
-              {equipmentOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-            </select>
-            {!purchaseForm.equipmentId && <input value={purchaseForm.itemName} onChange={(event) => setPurchaseForm({ ...purchaseForm, itemName: event.target.value })} placeholder="Или название новой позиции" />}
+            <div className="segmented-control" role="group" aria-label="Тип закупки">
+              <button
+                type="button"
+                className={purchaseForm.mode === "existing" ? "active" : ""}
+                onClick={() => setPurchaseForm({ ...purchaseForm, mode: "existing" })}
+              >
+                Пополнение
+              </button>
+              <button
+                type="button"
+                className={purchaseForm.mode === "new" ? "active" : ""}
+                onClick={() => setPurchaseForm({ ...purchaseForm, mode: "new" })}
+              >
+                Новая позиция
+              </button>
+            </div>
+            {purchaseForm.mode === "existing" ? (
+              <select value={purchaseForm.equipmentId} onChange={(event) => setPurchaseForm({ ...purchaseForm, equipmentId: event.target.value })}>
+                <option value="">Позиция из каталога</option>
+                {equipmentOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+              </select>
+            ) : (
+              <>
+                <select value={purchaseForm.categoryId} onChange={(event) => setPurchaseForm({ ...purchaseForm, categoryId: event.target.value })}>
+                  <option value="">Категория</option>
+                  {data?.categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+                <input value={purchaseForm.name} onChange={(event) => setPurchaseForm({ ...purchaseForm, name: event.target.value })} placeholder="Название: пульт, микрофон, стойка" />
+                <input value={purchaseForm.type} onChange={(event) => setPurchaseForm({ ...purchaseForm, type: event.target.value })} placeholder="Тип: цифровой микшер, радиосистема" />
+                <input value={purchaseForm.model} onChange={(event) => setPurchaseForm({ ...purchaseForm, model: event.target.value })} placeholder="Модель" />
+                <input value={purchaseForm.manufacturer} onChange={(event) => setPurchaseForm({ ...purchaseForm, manufacturer: event.target.value })} placeholder="Производитель" />
+                <input value={purchaseForm.serialNumber} onChange={(event) => setPurchaseForm({ ...purchaseForm, serialNumber: event.target.value })} placeholder="Серийный номер" />
+                <input value={purchaseForm.description} onChange={(event) => setPurchaseForm({ ...purchaseForm, description: event.target.value })} placeholder="Примечание" />
+                <input type="number" min={0} value={purchaseForm.minStock} onChange={(event) => setPurchaseForm({ ...purchaseForm, minStock: Number(event.target.value) })} placeholder="Минимальный остаток" />
+              </>
+            )}
             <input type="number" min={1} value={purchaseForm.quantity} onChange={(event) => setPurchaseForm({ ...purchaseForm, quantity: Number(event.target.value) })} placeholder="Количество" />
-            <button className="primary-btn" onClick={submitPurchase} disabled={!purchaseForm.title || !purchaseForm.supplierName}>Создать закупку</button>
+            <select value={purchaseForm.locationId} onChange={(event) => setPurchaseForm({ ...purchaseForm, locationId: event.target.value })}>
+              <option value="">Ячейка приёмки</option>
+              {locationOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            </select>
+            <button className="primary-btn" onClick={submitPurchase} disabled={!purchaseReady}>Создать закупку</button>
           </article>
         </section>
       ) : (
@@ -751,7 +873,22 @@ export default function App() {
               <div key={purchase.id} className="list-row">
                 <strong>{purchase.title}</strong>
                 <span><span className={`status-pill status-${purchase.status.toLowerCase()}`}>{statusLabel(purchase.status)}</span></span>
-                <small>Поставщик: {purchase.supplierName}. {purchase.items.map((item) => `${item.itemName} (x${item.quantity})`).join(", ")}</small>
+                <small>Поставщик: {purchase.supplierName}. План: {fmtDate(purchase.plannedDeliveryAt)}</small>
+                <div className="purchase-items">
+                  {purchase.items.map((item, index) => (
+                    <div key={index}>
+                      <span className={`status-pill ${item.mode === "new" ? "status-partial" : "status-ordered"}`}>
+                        {item.mode === "new" ? "Новая" : "Пополнение"}
+                      </span>
+                      <span>{item.itemName} (x{item.quantity})</span>
+                      {item.categoryName ? <small>Категория: {item.categoryName}</small> : null}
+                      {item.locationLabel ? <small>Приёмка: {item.locationLabel}</small> : null}
+                    </div>
+                  ))}
+                </div>
+                {purchase.status !== "DELIVERED" && (actorRole === "ADMIN" || actorRole === "WAREHOUSE") ? (
+                  <button className="secondary-btn" onClick={() => receivePurchase(purchase.id)} disabled={busy === purchase.id}>Принять закупку</button>
+                ) : null}
               </div>
             ))}
             {(!data?.repairs.length && !data?.purchases.length) && <div className="muted-text">Нет ремонтов и закупок.</div>}

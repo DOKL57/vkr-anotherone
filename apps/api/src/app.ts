@@ -103,7 +103,24 @@ type PurchaseView = {
   plannedDeliveryAt?: string | null;
   actualDeliveryAt?: string | null;
   status: string;
-  items: Array<{ equipmentId?: string; itemName: string; quantity: number }>;
+  items: Array<{
+    mode: "existing" | "new";
+    equipmentId?: string;
+    itemName: string;
+    quantity: number;
+    locationId?: string;
+    locationLabel?: string;
+    categoryId?: string;
+    categoryName?: string;
+    name?: string;
+    type?: string;
+    model?: string;
+    manufacturer?: string;
+    serialNumber?: string;
+    description?: string;
+    minStock?: number;
+    receivedEquipmentId?: string;
+  }>;
 };
 
 type Actor = {
@@ -299,9 +316,20 @@ const purchaseCreateSchema = z.object({
   items: z
     .array(
       z.object({
+        mode: z.enum(["existing", "new"]).optional(),
         equipmentId: z.string().optional(),
-        itemName: z.string().min(2),
+        itemName: z.string().min(2).optional(),
         quantity: z.number().int().positive(),
+        locationId: z.string().optional(),
+        categoryId: z.string().optional(),
+        name: z.string().optional(),
+        type: z.string().optional(),
+        model: z.string().optional(),
+        manufacturer: z.string().optional(),
+        serialNumber: z.string().optional(),
+        description: z.string().optional(),
+        minStock: z.number().int().nonnegative().optional(),
+        technicalSpecs: z.record(z.string()).optional(),
         unitPrice: z.number().nonnegative().optional(),
         totalPrice: z.number().nonnegative().optional(),
         shortageReason: z.string().optional(),
@@ -309,6 +337,29 @@ const purchaseCreateSchema = z.object({
       })
     )
     .min(1)
+}).superRefine((input, ctx) => {
+  input.items.forEach((item, index) => {
+    const mode = item.mode ?? (item.equipmentId ? "existing" : "new");
+    if (mode === "existing" && !item.equipmentId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["items", index, "equipmentId"],
+        message: "Для пополнения существующей позиции выберите оборудование."
+      });
+    }
+
+    if (mode === "new") {
+      for (const field of ["categoryId", "name", "type", "model"] as const) {
+        if (!item[field]?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["items", index, field],
+            message: "Для новой позиции нужно заполнить карточку оборудования."
+          });
+        }
+      }
+    }
+  });
 });
 
 function normalize(value: string) {
@@ -479,6 +530,67 @@ async function upsertInventoryBalance(
     `,
     [equipmentId, locationId, quantityDelta]
   );
+}
+
+async function insertEquipmentRecord(
+  client: PoolClient,
+  input: {
+    categoryId: string;
+    name: string;
+    type: string;
+    model: string;
+    manufacturer?: string;
+    serialNumber?: string | null;
+    description?: string | null;
+    minStock?: number;
+    technicalSpecs?: Record<string, string>;
+  }
+) {
+  const equipment = await queryOne<{ id: string; createdAt: Date }>(
+    `
+      INSERT INTO equipment (
+        id,
+        category_id,
+        status_id,
+        name,
+        model,
+        serial_number,
+        specifications,
+        note
+      )
+      VALUES (
+        gen_random_uuid()::text,
+        $1,
+        (SELECT id FROM equipment_status WHERE name = 'AVAILABLE'),
+        $2,
+        $3,
+        NULLIF($4, ''),
+        $5::jsonb,
+        NULLIF($6, '')
+      )
+      RETURNING id, created_at AS "createdAt"
+    `,
+    [
+      input.categoryId,
+      input.name.trim(),
+      input.model.trim(),
+      input.serialNumber?.trim() ?? "",
+      JSON.stringify({
+        type: input.type.trim(),
+        manufacturer: input.manufacturer?.trim() || undefined,
+        minStock: input.minStock ?? 0,
+        technicalSpecs: input.technicalSpecs ?? {}
+      }),
+      input.description?.trim() ?? ""
+    ],
+    client
+  );
+
+  if (!equipment) {
+    throw new Error("Не удалось создать оборудование.");
+  }
+
+  return equipment;
 }
 
 async function recomputeEquipmentStatus(client: PoolClient, equipmentId: string) {
@@ -751,29 +863,57 @@ async function getRepairRows(client?: PoolClient) {
 }
 
 async function getPurchaseRows(client?: PoolClient) {
-  const logs = await query<OperationLogRow>(
-    `
-      SELECT
-        ol.id,
-        ol.action,
-        ol.action_time AS "actionTime",
-        ol.details,
-        ol.user_id AS "userId",
-        au.employee_id AS "employeeId",
-        e.full_name AS "employeeName"
-      FROM operation_log ol
-      LEFT JOIN app_user au
-        ON au.id = ol.user_id
-      LEFT JOIN employee e
-        ON e.id = au.employee_id
-      WHERE ol.action IN ('PURCHASE_CREATED', 'PURCHASE_RECEIVED')
-      ORDER BY ol.action_time ASC
-    `,
-    [],
-    client
-  );
+  const [logs, categories, locations] = await Promise.all([
+    query<OperationLogRow>(
+      `
+        SELECT
+          ol.id,
+          ol.action,
+          ol.action_time AS "actionTime",
+          ol.details,
+          ol.user_id AS "userId",
+          au.employee_id AS "employeeId",
+          e.full_name AS "employeeName"
+        FROM operation_log ol
+        LEFT JOIN app_user au
+          ON au.id = ol.user_id
+        LEFT JOIN employee e
+          ON e.id = au.employee_id
+        WHERE ol.action IN ('PURCHASE_CREATED', 'PURCHASE_RECEIVED')
+        ORDER BY ol.action_time ASC
+      `,
+      [],
+      client
+    ),
+    query<{ id: string; name: string }>("SELECT id, name FROM equipment_category", [], client),
+    query<{
+      id: string;
+      zone: string;
+      rowNumber: string | null;
+      rack: string | null;
+      cell: string | null;
+      warehouseName: string;
+    }>(
+      `
+        SELECT
+          sl.id,
+          sl.zone,
+          sl.row_number AS "rowNumber",
+          sl.rack,
+          sl.cell,
+          w.name AS "warehouseName"
+        FROM storage_location sl
+        JOIN warehouse w
+          ON w.id = sl.warehouse_id
+      `,
+      [],
+      client
+    )
+  ]);
 
   const purchases = new Map<string, PurchaseView>();
+  const categoryMap = new Map(categories.map((row) => [row.id, row.name]));
+  const locationMap = new Map(locations.map((row) => [row.id, buildLocationLabel(row)]));
 
   for (const log of logs) {
     const details = asMap(log.details);
@@ -793,10 +933,29 @@ async function getPurchaseRows(client?: PoolClient) {
         status: asString(details.status) ?? "REQUESTED",
         items: rawItems.map((item) => {
           const row = asMap(item);
+          const equipmentId = asString(row.equipmentId);
+          const mode = asString(row.mode) === "new" || !equipmentId ? "new" : "existing";
+          const categoryId = asString(row.categoryId);
+          const name = asString(row.name);
+          const model = asString(row.model);
+          const locationId = asString(row.locationId);
+          const generatedItemName = [name, model].filter(Boolean).join(" ") || "Новая позиция";
           return {
-            equipmentId: asString(row.equipmentId),
-            itemName: asString(row.itemName) ?? "Новая позиция",
-            quantity: asNumber(row.quantity) ?? 1
+            mode,
+            equipmentId,
+            itemName: asString(row.itemName) ?? generatedItemName,
+            quantity: asNumber(row.quantity) ?? 1,
+            locationId,
+            locationLabel: locationId ? locationMap.get(locationId) : undefined,
+            categoryId,
+            categoryName: categoryId ? categoryMap.get(categoryId) : undefined,
+            name,
+            type: asString(row.type),
+            model,
+            manufacturer: asString(row.manufacturer),
+            serialNumber: asString(row.serialNumber),
+            description: asString(row.description),
+            minStock: asNumber(row.minStock)
           };
         })
       });
@@ -807,6 +966,19 @@ async function getPurchaseRows(client?: PoolClient) {
       if (current) {
         current.status = "DELIVERED";
         current.actualDeliveryAt = log.actionTime.toISOString();
+        const receivedItems = Array.isArray(details.receivedItems) ? details.receivedItems : [];
+        for (const rawItem of receivedItems) {
+          const received = asMap(rawItem);
+          const itemIndex = asNumber(received.itemIndex);
+          if (itemIndex === undefined || !current.items[itemIndex]) {
+            continue;
+          }
+          const receivedEquipmentId = asString(received.equipmentId);
+          if (receivedEquipmentId) {
+            current.items[itemIndex].receivedEquipmentId = receivedEquipmentId;
+            current.items[itemIndex].equipmentId ??= receivedEquipmentId;
+          }
+        }
       }
     }
   }
@@ -991,49 +1163,7 @@ async function createEquipment(payload: unknown) {
   const employee = await requireRole(input.actorId, ["ADMIN", "WAREHOUSE"]);
 
   return withTransaction(async (client) => {
-    const equipment = await queryOne<{ id: string; createdAt: Date }>(
-      `
-        INSERT INTO equipment (
-          id,
-          category_id,
-          status_id,
-          name,
-          model,
-          serial_number,
-          specifications,
-          note
-        )
-        VALUES (
-          gen_random_uuid()::text,
-          $1,
-          (SELECT id FROM equipment_status WHERE name = 'AVAILABLE'),
-          $2,
-          $3,
-          $4,
-          $5::jsonb,
-          $6
-        )
-        RETURNING id, created_at AS "createdAt"
-      `,
-      [
-        input.categoryId,
-        input.name,
-        input.model,
-        input.serialNumber ?? null,
-        JSON.stringify({
-          type: input.type,
-          manufacturer: input.manufacturer,
-          minStock: input.minStock,
-          technicalSpecs: input.technicalSpecs
-        }),
-        input.description ?? null
-      ],
-      client
-    );
-
-    if (!equipment) {
-      throw new Error("Не удалось создать оборудование.");
-    }
+    const equipment = await insertEquipmentRecord(client, input);
 
     for (const row of input.inventory) {
       await upsertInventoryBalance(client, equipment.id, row.locationId, row.quantity);
@@ -1448,30 +1578,111 @@ async function createPurchase(payload: unknown) {
   const employee = await requireRole(input.actorId, ["ADMIN", "WAREHOUSE"]);
   const purchaseId = randomUUID();
 
-  await query(
-    `
-      INSERT INTO operation_log (id, user_id, action, details)
-      VALUES (gen_random_uuid()::text, $1, 'PURCHASE_CREATED', $2::jsonb)
-    `,
-    [
-      employee.appUserId,
-      JSON.stringify({
-        purchaseId,
-        title: input.title,
-        supplierName: input.supplierName,
-        supplierContact: input.supplierContact ?? null,
-        plannedDeliveryAt: input.plannedDeliveryAt ?? null,
-        totalCost: input.totalCost ?? null,
-        reason: input.reason,
-        deficitSource: input.deficitSource ?? null,
-        projectId: input.projectId ?? null,
-        notes: input.notes ?? null,
-        requestedById: employee.employeeId,
-        status: input.plannedDeliveryAt ? "ORDERED" : "REQUESTED",
-        items: input.items
-      })
-    ]
-  );
+  await withTransaction(async (client) => {
+    const normalizedItems = [];
+
+    for (const item of input.items) {
+      const mode = item.mode ?? (item.equipmentId ? "existing" : "new");
+      if (!item.locationId) {
+        throw new Error("Выберите ячейку склада для приёмки закупки.");
+      }
+
+      const location = await queryOne<{ id: string }>(
+        "SELECT id FROM storage_location WHERE id = $1",
+        [item.locationId],
+        client
+      );
+      if (!location) {
+        throw new Error("Ячейка приёмки не найдена.");
+      }
+
+      if (mode === "existing") {
+        const equipment = await queryOne<{ name: string; model: string }>(
+          "SELECT name, model FROM equipment WHERE id = $1",
+          [item.equipmentId],
+          client
+        );
+        if (!equipment) {
+          throw new Error("Оборудование для пополнения не найдено.");
+        }
+
+        normalizedItems.push({
+          mode,
+          equipmentId: item.equipmentId,
+          itemName: item.itemName || `${equipment.name} ${equipment.model}`,
+          quantity: item.quantity,
+          locationId: item.locationId,
+          unitPrice: item.unitPrice,
+          totalPrice: item.totalPrice,
+          shortageReason: item.shortageReason,
+          usageNote: item.usageNote
+        });
+        continue;
+      }
+
+      const category = await queryOne<{ id: string; name: string }>(
+        "SELECT id, name FROM equipment_category WHERE id = $1",
+        [item.categoryId],
+        client
+      );
+      if (!category) {
+        throw new Error("Категория новой позиции не найдена.");
+      }
+
+      const name = item.name?.trim();
+      const type = item.type?.trim();
+      const model = item.model?.trim();
+      if (!name || !type || !model || !item.categoryId) {
+        throw new Error("Заполните название, тип, модель и категорию новой позиции.");
+      }
+
+      normalizedItems.push({
+        mode,
+        itemName: item.itemName || `${name} ${model}`,
+        quantity: item.quantity,
+        locationId: item.locationId,
+        categoryId: item.categoryId,
+        categoryName: category.name,
+        name,
+        type,
+        model,
+        manufacturer: item.manufacturer?.trim() || undefined,
+        serialNumber: item.serialNumber?.trim() || undefined,
+        description: item.description?.trim() || undefined,
+        minStock: item.minStock ?? 0,
+        technicalSpecs: item.technicalSpecs ?? {},
+        unitPrice: item.unitPrice,
+        totalPrice: item.totalPrice,
+        shortageReason: item.shortageReason,
+        usageNote: item.usageNote
+      });
+    }
+
+    await client.query(
+      `
+        INSERT INTO operation_log (id, user_id, action, details)
+        VALUES (gen_random_uuid()::text, $1, 'PURCHASE_CREATED', $2::jsonb)
+      `,
+      [
+        employee.appUserId,
+        JSON.stringify({
+          purchaseId,
+          title: input.title,
+          supplierName: input.supplierName,
+          supplierContact: input.supplierContact ?? null,
+          plannedDeliveryAt: input.plannedDeliveryAt ?? null,
+          totalCost: input.totalCost ?? null,
+          reason: input.reason,
+          deficitSource: input.deficitSource ?? null,
+          projectId: input.projectId ?? null,
+          notes: input.notes ?? null,
+          requestedById: employee.employeeId,
+          status: input.plannedDeliveryAt ? "ORDERED" : "REQUESTED",
+          items: normalizedItems
+        })
+      ]
+    );
+  });
 
   return { id: purchaseId, status: input.plannedDeliveryAt ? "ORDERED" : "REQUESTED" };
 }
@@ -1507,7 +1718,7 @@ async function receivePurchase(purchaseId: string, actorId: string) {
       return { id: purchaseId, status: "DELIVERED" };
     }
 
-    const firstLocation = await queryOne<{ id: string; warehouseId: string }>(
+    const fallbackLocation = await queryOne<{ id: string; warehouseId: string }>(
       `
         SELECT id, warehouse_id AS "warehouseId"
         FROM storage_location
@@ -1518,23 +1729,85 @@ async function receivePurchase(purchaseId: string, actorId: string) {
       client
     );
 
-    if (!firstLocation) {
+    if (!fallbackLocation) {
       throw new Error("Нет ячеек для приёмки.");
     }
 
     const created = purchaseLogs.find((log) => log.action === "PURCHASE_CREATED");
     const details = asMap(created?.details);
     const items = Array.isArray(details.items) ? details.items : [];
+    const receivedItems: Array<{
+      itemIndex: number;
+      equipmentId: string;
+      mode: "existing" | "new";
+      quantity: number;
+      locationId: string;
+      warehouseId: string;
+    }> = [];
 
-    for (const raw of items) {
+    for (const [itemIndex, raw] of items.entries()) {
       const item = asMap(raw);
       const equipmentId = asString(item.equipmentId);
       const quantity = asNumber(item.quantity) ?? 0;
-      if (!equipmentId || quantity <= 0) {
+      const locationId = asString(item.locationId) ?? fallbackLocation.id;
+      const location = await queryOne<{ id: string; warehouseId: string }>(
+        "SELECT id, warehouse_id AS \"warehouseId\" FROM storage_location WHERE id = $1",
+        [locationId],
+        client
+      );
+
+      if (!location) {
+        throw new Error("Ячейка приёмки не найдена.");
+      }
+
+      if (quantity <= 0) {
         continue;
       }
-      await upsertInventoryBalance(client, equipmentId, firstLocation.id, quantity);
-      await recomputeEquipmentStatus(client, equipmentId);
+
+      if (equipmentId) {
+        await upsertInventoryBalance(client, equipmentId, location.id, quantity);
+        await recomputeEquipmentStatus(client, equipmentId);
+        receivedItems.push({
+          itemIndex,
+          equipmentId,
+          mode: "existing",
+          quantity,
+          locationId: location.id,
+          warehouseId: location.warehouseId
+        });
+        continue;
+      }
+
+      const categoryId = asString(item.categoryId);
+      const name = asString(item.name);
+      const type = asString(item.type);
+      const model = asString(item.model);
+      if (!categoryId || !name || !type || !model) {
+        throw new Error("Новая позиция закупки не содержит данных карточки оборудования.");
+      }
+
+      const equipment = await insertEquipmentRecord(client, {
+        categoryId,
+        name,
+        type,
+        model,
+        manufacturer: asString(item.manufacturer),
+        serialNumber: asString(item.serialNumber),
+        description: asString(item.description),
+        minStock: asNumber(item.minStock) ?? 0,
+        technicalSpecs: asStringRecord(item.technicalSpecs)
+      });
+
+      await upsertInventoryBalance(client, equipment.id, location.id, quantity);
+      await recomputeEquipmentStatus(client, equipment.id);
+      receivedItems.push({
+        itemIndex,
+        equipmentId: equipment.id,
+        mode: "new",
+        quantity,
+        locationId: location.id,
+        warehouseId: location.warehouseId
+      });
     }
 
     await client.query(
@@ -1547,8 +1820,7 @@ async function receivePurchase(purchaseId: string, actorId: string) {
         JSON.stringify({
           purchaseId,
           receivedById: employee.employeeId,
-          locationId: firstLocation.id,
-          warehouseId: firstLocation.warehouseId
+          receivedItems
         })
       ]
     );

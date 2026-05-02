@@ -30,7 +30,8 @@ const buttons = {
   purchases: "Закупки",
   createIssue: "Создать выдачу",
   createRepair: "Создать ремонт",
-  createPurchase: "Создать закупку",
+  createPurchaseExisting: "Закупить существующее",
+  createPurchaseNew: "Закупить новое",
   returnIssue: "Принять выдачу",
   completeRepair: "Завершить ремонт",
   receivePurchase: "Принять закупку",
@@ -54,7 +55,8 @@ function menuKeyboard(role?: string): TelegramBot.SendMessageOptions {
         ...(canMutate
           ? [
               row(buttons.createIssue, buttons.createRepair),
-              row(buttons.createPurchase),
+              row(buttons.createPurchaseExisting),
+              row(buttons.createPurchaseNew),
               row(buttons.returnIssue, buttons.completeRepair),
               row(buttons.receivePurchase)
             ]
@@ -199,8 +201,14 @@ async function handlePending(bot: TelegramBot, msg: Msg) {
       return true;
     }
 
-    if (session.pending.type === "purchase") {
-      await createPurchaseFromText(bot, chatId, text);
+    if (session.pending.type === "purchase_existing") {
+      await createExistingPurchaseFromText(bot, chatId, text);
+      updateSession(chatId, { pending: undefined });
+      return true;
+    }
+
+    if (session.pending.type === "purchase_new") {
+      await createNewPurchaseFromText(bot, chatId, text);
       updateSession(chatId, { pending: undefined });
       return true;
     }
@@ -355,18 +363,37 @@ async function promptRepair(bot: TelegramBot, msg: Msg) {
   });
 }
 
-async function promptPurchase(bot: TelegramBot, msg: Msg) {
+async function promptExistingPurchase(bot: TelegramBot, msg: Msg) {
   await withData(msg.chat.id, async (_token, data) => {
     if (!canEdit(data)) throw new Error("Нет прав. Нужна роль ADMIN или WAREHOUSE.");
-    updateSession(msg.chat.id, { pending: { type: "purchase" } });
+    updateSession(msg.chat.id, { pending: { type: "purchase_existing" } });
     await sendLong(bot, msg.chat.id, [
-      "Новая закупка. Формат:",
-      "title=Заявка; supplier=Поставщик; equipment=1; item=Shure SM58; qty=1; planned=2026-05-01T18:00; reason=Пополнение склада",
-      "",
-      "equipment можно не указывать, если новая позиция.",
+      "Закупка существующей позиции. Формат:",
+      "title=Пополнение микрофонов; supplier=Поставщик; equipment=1; qty=2; location=1; planned=2026-05-01T18:00; reason=Пополнение склада",
       "",
       "Оборудование:",
-      data.equipment.map((item, i) => `${i + 1}. ${item.name} ${item.model}`).slice(0, 30).join("\n")
+      data.equipment.map((item, i) => `${i + 1}. ${item.name} ${item.model}`).slice(0, 30).join("\n"),
+      "",
+      "Ячейки приёмки:",
+      data.locations.map((item, i) => `${i + 1}. ${item.label}`).slice(0, 40).join("\n")
+    ].join("\n"));
+    await bot.sendMessage(msg.chat.id, "Отправьте строку с полями или нажмите Отмена.", cancelKeyboard());
+  });
+}
+
+async function promptNewPurchase(bot: TelegramBot, msg: Msg) {
+  await withData(msg.chat.id, async (_token, data) => {
+    if (!canEdit(data)) throw new Error("Нет прав. Нужна роль ADMIN или WAREHOUSE.");
+    updateSession(msg.chat.id, { pending: { type: "purchase_new" } });
+    await sendLong(bot, msg.chat.id, [
+      "Закупка новой позиции. Формат:",
+      "title=Новый пульт; supplier=Поставщик; category=1; name=Пульт; type=Цифровой микшер; model=Behringer X32; manufacturer=Behringer; serial=; qty=1; location=1; min=0; planned=2026-05-01T18:00; reason=Новая позиция склада",
+      "",
+      "Категории:",
+      data.categories.map((item, i) => `${i + 1}. ${item.name}`).join("\n"),
+      "",
+      "Ячейки приёмки:",
+      data.locations.map((item, i) => `${i + 1}. ${item.label}`).slice(0, 40).join("\n")
     ].join("\n"));
     await bot.sendMessage(msg.chat.id, "Отправьте строку с полями или нажмите Отмена.", cancelKeyboard());
   });
@@ -425,11 +452,16 @@ async function createRepairFromText(bot: TelegramBot, chatId: number, text: stri
   });
 }
 
-async function createPurchaseFromText(bot: TelegramBot, chatId: number, text: string) {
+async function createExistingPurchaseFromText(bot: TelegramBot, chatId: number, text: string) {
   await withData(chatId, async (token, data) => {
     const p = parsePairs(text);
-    const equipmentId = p.equipment ? idByIndex(data.equipment, p.equipment) : undefined;
-    const selected = equipmentId ? data.equipment.find((item) => item.id === equipmentId) : undefined;
+    if (!canEdit(data)) throw new Error("Нет прав. Нужна роль ADMIN или WAREHOUSE.");
+    if (!p.equipment) throw new Error("Укажите equipment.");
+    if (!p.location) throw new Error("Укажите location.");
+
+    const equipmentId = idByIndex(data.equipment, p.equipment);
+    const locationId = idByIndex(data.locations, p.location);
+    const selected = data.equipment.find((item) => item.id === equipmentId);
 
     await apiFetch("/api/purchases", {
       method: "POST",
@@ -440,14 +472,61 @@ async function createPurchaseFromText(bot: TelegramBot, chatId: number, text: st
         plannedDeliveryAt: p.planned ? new Date(p.planned).toISOString() : undefined,
         reason: p.reason ?? "Закупка оборудования",
         items: [{
+          mode: "existing",
           equipmentId,
-          itemName: p.item ?? (selected ? `${selected.name} ${selected.model}` : "Новая позиция"),
-          quantity: Number(p.qty ?? 1)
+          itemName: selected ? `${selected.name} ${selected.model}` : "Пополнение склада",
+          quantity: Number(p.qty ?? 1),
+          locationId
         }]
       })
     }, token);
 
     await sendMenu(bot, chatId, "Закупка создана.");
+  });
+}
+
+async function createNewPurchaseFromText(bot: TelegramBot, chatId: number, text: string) {
+  await withData(chatId, async (token, data) => {
+    const p = parsePairs(text);
+    if (!canEdit(data)) throw new Error("Нет прав. Нужна роль ADMIN или WAREHOUSE.");
+    if (!p.category) throw new Error("Укажите category.");
+    if (!p.location) throw new Error("Укажите location.");
+
+    const categoryId = idByIndex(data.categories, p.category);
+    const locationId = idByIndex(data.locations, p.location);
+    const name = p.name?.trim();
+    const type = p.type?.trim();
+    const model = p.model?.trim();
+    if (!name || !type || !model) {
+      throw new Error("Укажите name, type и model.");
+    }
+
+    await apiFetch("/api/purchases", {
+      method: "POST",
+      body: JSON.stringify({
+        actorId: data.currentUser.id,
+        title: p.title,
+        supplierName: p.supplier,
+        plannedDeliveryAt: p.planned ? new Date(p.planned).toISOString() : undefined,
+        reason: p.reason ?? "Новая позиция склада",
+        items: [{
+          mode: "new",
+          itemName: p.item ?? `${name} ${model}`,
+          quantity: Number(p.qty ?? 1),
+          locationId,
+          categoryId,
+          name,
+          type,
+          model,
+          manufacturer: p.manufacturer,
+          serialNumber: p.serial,
+          description: p.description,
+          minStock: Number(p.min ?? 0)
+        }]
+      })
+    }, token);
+
+    await sendMenu(bot, chatId, "Закупка новой позиции создана.");
   });
 }
 
@@ -614,8 +693,13 @@ async function main() {
           await promptRepair(bot, msg);
           break;
         case "/new_purchase":
-        case buttons.createPurchase:
-          await promptPurchase(bot, msg);
+        case "/new_purchase_existing":
+        case buttons.createPurchaseExisting:
+          await promptExistingPurchase(bot, msg);
+          break;
+        case "/new_purchase_new":
+        case buttons.createPurchaseNew:
+          await promptNewPurchase(bot, msg);
           break;
         case "/return_issue":
           if (!args) {

@@ -14,7 +14,8 @@ export type PendingAction =
   | { type: "search" }
   | { type: "issue" }
   | { type: "repair" }
-  | { type: "purchase" }
+  | { type: "purchase_existing" }
+  | { type: "purchase_new" }
   | { type: "return_issue" }
   | { type: "complete_repair" }
   | { type: "receive_purchase" };

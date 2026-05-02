@@ -103,7 +103,11 @@ export function repairsText(rows: Repair[]) {
 export function purchasesText(rows: Purchase[]) {
   if (rows.length === 0) return "Закупок нет.";
   return rows.map((purchase, index) => {
-    const items = purchase.items.map((item) => `${item.itemName} x${item.quantity}`).join(", ");
+    const items = purchase.items.map((item) => {
+      const mode = item.mode === "new" ? "новая позиция" : "пополнение";
+      const location = item.locationLabel ? `, приёмка: ${item.locationLabel}` : "";
+      return `${item.itemName} x${item.quantity} (${mode}${location})`;
+    }).join(", ");
     return [
       `${index + 1}. ${purchase.title}`,
       `Поставщик: ${purchase.supplierName}. Статус: ${statusLabel(purchase.status)}.`,
@@ -132,8 +136,10 @@ export function userHelpText() {
     "/ai вопрос - AI-помощник",
     "/new_issue - создать выдачу",
     "/new_repair - создать ремонт",
-    "/new_purchase - создать закупку",
+    "/new_purchase_existing - закупка существующей позиции",
+    "/new_purchase_new - закупка новой позиции",
     "/return_issue ID - принять выдачу",
+    "/receive_purchase ID - принять закупку",
     "",
     "Формы вводятся одной строкой. Бот подскажет формат."
   ].join("\n");
