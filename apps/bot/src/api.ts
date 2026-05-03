@@ -30,6 +30,7 @@ export type Project = {
   location?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+  archivedAt?: string | null;
   comment?: string | null;
 };
 export type Category = { id: string; name: string };
@@ -181,5 +182,12 @@ export function createProject(token: string, input: {
   return apiFetch<Project>("/api/projects", {
     method: "POST",
     body: JSON.stringify(input)
+  }, token);
+}
+
+export function archivePastProjects(token: string, actorId: string) {
+  return apiFetch<{ archived: number; projects: Array<{ id: string; name: string }> }>("/api/projects/archive-past", {
+    method: "POST",
+    body: JSON.stringify({ actorId })
   }, token);
 }

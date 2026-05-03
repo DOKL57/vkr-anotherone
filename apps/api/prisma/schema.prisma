@@ -157,6 +157,7 @@ model Project {
   customer  String?
   startsAt  DateTime?
   endsAt    DateTime?
+  archivedAt DateTime?
   issues    IssueRecord[]
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt

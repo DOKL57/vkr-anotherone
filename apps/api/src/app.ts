@@ -1038,7 +1038,17 @@ async function getOperationRows(client?: PoolClient) {
   );
 }
 
+async function ensureProjectArchiveColumn(client?: PoolClient) {
+  await query(
+    "ALTER TABLE project ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP(3)",
+    [],
+    client
+  );
+}
+
 async function getBootstrapData() {
+  await ensureProjectArchiveColumn();
+
   const [categories, warehouses, locations, employees, projects, equipment, inventory, issues, repairs, purchases, operations] =
     await Promise.all([
       query<{ id: string; name: string; description: string | null }>(
@@ -1080,6 +1090,7 @@ async function getBootstrapData() {
         location: string | null;
         startDate: Date | null;
         endDate: Date | null;
+        archivedAt: Date | null;
         comment: string | null;
       }>(
         `
@@ -1090,6 +1101,7 @@ async function getBootstrapData() {
             location,
             start_date AS "startDate",
             end_date AS "endDate",
+            archived_at AS "archivedAt",
             comment
           FROM project
           ORDER BY start_date NULLS LAST, name
@@ -1197,6 +1209,7 @@ async function getBootstrapData() {
       location: row.location,
       startDate: row.startDate?.toISOString() ?? null,
       endDate: row.endDate?.toISOString() ?? null,
+      archivedAt: row.archivedAt?.toISOString() ?? null,
       comment: row.comment
     })),
     equipment: equipmentView,
@@ -1249,6 +1262,8 @@ async function createProject(payload: unknown) {
   const employee = await requireRole(input.actorId, ["ADMIN", "WAREHOUSE"]);
 
   return withTransaction(async (client) => {
+    await ensureProjectArchiveColumn(client);
+
     const project = await queryOne<{
       id: string;
       name: string;
@@ -1256,6 +1271,7 @@ async function createProject(payload: unknown) {
       location: string | null;
       startDate: Date | null;
       endDate: Date | null;
+      archivedAt: Date | null;
       comment: string | null;
     }>(
       `
@@ -1276,6 +1292,7 @@ async function createProject(payload: unknown) {
           location,
           start_date AS "startDate",
           end_date AS "endDate",
+          archived_at AS "archivedAt",
           comment
       `,
       [
@@ -1319,7 +1336,100 @@ async function createProject(payload: unknown) {
       location: project.location,
       startDate: project.startDate?.toISOString() ?? null,
       endDate: project.endDate?.toISOString() ?? null,
+      archivedAt: project.archivedAt?.toISOString() ?? null,
       comment: project.comment
+    };
+  });
+}
+
+async function setProjectArchived(projectId: string, actorId: string, archive: boolean) {
+  const employee = await requireRole(actorId, ["ADMIN"]);
+
+  return withTransaction(async (client) => {
+    await ensureProjectArchiveColumn(client);
+
+    const project = await queryOne<{
+      id: string;
+      name: string;
+      archivedAt: Date | null;
+    }>(
+      `
+        UPDATE project
+        SET archived_at = ${archive ? "CURRENT_TIMESTAMP" : "NULL"}
+        WHERE id = $1
+        RETURNING id, name, archived_at AS "archivedAt"
+      `,
+      [projectId],
+      client
+    );
+
+    if (!project) {
+      throw new Error("Мероприятие не найдено.");
+    }
+
+    await client.query(
+      `
+        INSERT INTO operation_log (id, user_id, action, details)
+        VALUES (gen_random_uuid()::text, $1, $2, $3::jsonb)
+      `,
+      [
+        employee.appUserId,
+        archive ? "PROJECT_ARCHIVED" : "PROJECT_RESTORED",
+        JSON.stringify({
+          projectId: project.id,
+          name: project.name,
+          actorId: employee.employeeId
+        })
+      ]
+    );
+
+    return {
+      id: project.id,
+      name: project.name,
+      archivedAt: project.archivedAt?.toISOString() ?? null
+    };
+  });
+}
+
+async function archivePastProjects(actorId: string) {
+  const employee = await requireRole(actorId, ["ADMIN"]);
+
+  return withTransaction(async (client) => {
+    await ensureProjectArchiveColumn(client);
+
+    const projects = await query<{ id: string; name: string }>(
+      `
+        UPDATE project
+        SET archived_at = CURRENT_TIMESTAMP
+        WHERE archived_at IS NULL
+          AND end_date IS NOT NULL
+          AND end_date < CURRENT_TIMESTAMP
+        RETURNING id, name
+      `,
+      [],
+      client
+    );
+
+    if (projects.length > 0) {
+      await client.query(
+        `
+          INSERT INTO operation_log (id, user_id, action, details)
+          VALUES (gen_random_uuid()::text, $1, 'PROJECTS_ARCHIVED_PAST', $2::jsonb)
+        `,
+        [
+          employee.appUserId,
+          JSON.stringify({
+            count: projects.length,
+            projectIds: projects.map((project) => project.id),
+            actorId: employee.employeeId
+          })
+        ]
+      );
+    }
+
+    return {
+      archived: projects.length,
+      projects
     };
   });
 }
@@ -1329,6 +1439,24 @@ async function createIssue(payload: unknown) {
   const employee = await requireRole(input.actorId, ["ADMIN", "WAREHOUSE"]);
 
   return withTransaction(async (client) => {
+    await ensureProjectArchiveColumn(client);
+
+    if (input.projectId) {
+      const project = await queryOne<{ id: string; archivedAt: Date | null }>(
+        "SELECT id, archived_at AS \"archivedAt\" FROM project WHERE id = $1",
+        [input.projectId],
+        client
+      );
+
+      if (!project) {
+        throw new Error("Мероприятие не найдено.");
+      }
+
+      if (project.archivedAt) {
+        throw new Error("Скрытое мероприятие нельзя выбрать для новой выдачи.");
+      }
+    }
+
     const issue = await queryOne<{ id: string }>(
       `
         INSERT INTO issue_operation (
@@ -2397,6 +2525,24 @@ export function createApp() {
     body.actorId = resolveActorId(req as AuthenticatedRequest, typeof body.actorId === "string" ? body.actorId : undefined);
     const created = await createProject(body);
     res.status(201).json(created);
+  }));
+
+  app.post("/api/projects/archive-past", asyncHandler(async (req, res) => {
+    const body = z.object({ actorId: z.string().optional() }).parse(req.body);
+    const result = await archivePastProjects(resolveActorId(req as AuthenticatedRequest, body.actorId));
+    res.json(result);
+  }));
+
+  app.post("/api/projects/:id/archive", asyncHandler(async (req, res) => {
+    const body = z.object({ actorId: z.string().optional() }).parse(req.body);
+    const updated = await setProjectArchived(String(req.params.id), resolveActorId(req as AuthenticatedRequest, body.actorId), true);
+    res.json(updated);
+  }));
+
+  app.post("/api/projects/:id/restore", asyncHandler(async (req, res) => {
+    const body = z.object({ actorId: z.string().optional() }).parse(req.body);
+    const updated = await setProjectArchived(String(req.params.id), resolveActorId(req as AuthenticatedRequest, body.actorId), false);
+    res.json(updated);
   }));
 
   app.post("/api/issues", asyncHandler(async (req, res) => {

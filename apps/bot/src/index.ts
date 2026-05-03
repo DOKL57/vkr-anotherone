@@ -1,5 +1,5 @@
 import TelegramBot from "node-telegram-bot-api";
-import { apiFetch, askAi, bootstrap, createProject, login, logout } from "./api.js";
+import { apiFetch, archivePastProjects, askAi, bootstrap, createProject, login, logout } from "./api.js";
 import type { BootstrapData } from "./api.js";
 import { env } from "./env.js";
 import {
@@ -31,6 +31,7 @@ const buttons = {
   repairs: "Ремонты",
   purchases: "Закупки",
   createProject: "Создать мероприятие",
+  hidePastProjects: "Скрыть прошедшие",
   createIssue: "Создать выдачу",
   createRepair: "Создать ремонт",
   createPurchaseExisting: "Закупить существующее",
@@ -59,6 +60,7 @@ function menuKeyboard(role?: string): TelegramBot.SendMessageOptions {
         ...(canMutate
           ? [
               row(buttons.createProject, buttons.createIssue),
+              ...(role === "ADMIN" ? [row(buttons.hidePastProjects)] : []),
               row(buttons.createRepair),
               row(buttons.createPurchaseExisting),
               row(buttons.createPurchaseNew),
@@ -106,6 +108,10 @@ function requireToken(chatId: number) {
 function canEdit(data: BootstrapData) {
   const role = data.currentUser.role;
   return role === "ADMIN" || role === "WAREHOUSE";
+}
+
+function canAdmin(data: BootstrapData) {
+  return data.currentUser.role === "ADMIN";
 }
 
 function idByIndex<T extends { id: string }>(rows: T[], value: string) {
@@ -301,6 +307,14 @@ async function handleProjects(bot: TelegramBot, msg: Msg) {
   });
 }
 
+async function handleHidePastProjects(bot: TelegramBot, msg: Msg) {
+  await withData(msg.chat.id, async (token, data) => {
+    if (!canAdmin(data)) throw new Error("Нет прав. Нужна роль ADMIN.");
+    const result = await archivePastProjects(token, data.currentUser.id);
+    await sendMenu(bot, msg.chat.id, `Скрыто прошедших мероприятий: ${result.archived}.`);
+  });
+}
+
 async function handleCatalog(bot: TelegramBot, msg: Msg, query: string) {
   await withData(msg.chat.id, async (_token, data) => {
     const terms = normalize(query);
@@ -359,6 +373,7 @@ async function promptProject(bot: TelegramBot, msg: Msg) {
 async function promptIssue(bot: TelegramBot, msg: Msg) {
   await withData(msg.chat.id, async (_token, data) => {
     if (!canEdit(data)) throw new Error("Нет прав. Нужна роль ADMIN или WAREHOUSE.");
+    const activeProjects = data.projects.filter((project) => !project.archivedAt);
     updateSession(msg.chat.id, { pending: { type: "issue" } });
     await sendLong(bot, msg.chat.id, [
       "Новая выдача. Формат:",
@@ -371,7 +386,7 @@ async function promptIssue(bot: TelegramBot, msg: Msg) {
       data.warehouses.map((item, i) => `${i + 1}. ${item.name}`).join("\n"),
       "",
       "Мероприятия:",
-      data.projects.map((item, i) => `${i + 1}. ${item.name}`).slice(0, 20).join("\n") || "пока нет"
+      activeProjects.map((item, i) => `${i + 1}. ${item.name}`).slice(0, 20).join("\n") || "пока нет"
     ].join("\n"));
     await bot.sendMessage(msg.chat.id, "Отправьте строку с полями или нажмите Отмена.", cancelKeyboard());
   });
@@ -457,7 +472,8 @@ async function createIssueFromText(bot: TelegramBot, chatId: number, text: strin
     const p = parsePairs(text);
     const equipmentId = idByIndex(data.equipment, p.equipment ?? "");
     const warehouseId = idByIndex(data.warehouses, p.warehouse ?? "");
-    const projectId = p.project ? idByIndex(data.projects, p.project) : undefined;
+    const activeProjects = data.projects.filter((project) => !project.archivedAt);
+    const projectId = p.project ? idByIndex(activeProjects, p.project) : undefined;
     const assignedEmployeeId = p.employee ? idByIndex(data.employees, p.employee) : undefined;
     const dueAt = p.due ? new Date(p.due).toISOString() : "";
 
@@ -724,6 +740,10 @@ async function main() {
         case "/projects":
         case buttons.projects:
           await handleProjects(bot, msg);
+          break;
+        case "/hide_past_projects":
+        case buttons.hidePastProjects:
+          await handleHidePastProjects(bot, msg);
           break;
         case "/issues":
         case buttons.issues:

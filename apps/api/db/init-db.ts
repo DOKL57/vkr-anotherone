@@ -145,6 +145,7 @@ const statements = [
     location TEXT,
     start_date TIMESTAMP(3),
     end_date TIMESTAMP(3),
+    archived_at TIMESTAMP(3),
     comment TEXT
   );`,
 

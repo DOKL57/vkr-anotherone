@@ -117,8 +117,9 @@ export function purchasesText(rows: Purchase[]) {
 }
 
 export function projectsText(rows: Project[]) {
-  if (rows.length === 0) return "Мероприятий нет.";
-  return rows.map((project, index) => [
+  const activeRows = rows.filter((project) => !project.archivedAt);
+  if (activeRows.length === 0) return "Активных мероприятий нет.";
+  return activeRows.map((project, index) => [
     `${index + 1}. ${project.name}`,
     `Сроки: ${project.startDate ? fmtDate(project.startDate) : "без начала"} - ${project.endDate ? fmtDate(project.endDate) : "без окончания"}.`,
     `Заказчик: ${project.customer ?? "не указан"}. Площадка: ${project.location ?? "не указана"}.`,
@@ -146,6 +147,7 @@ export function userHelpText() {
     "/purchases - закупки",
     "/ai вопрос - AI-помощник",
     "/new_project - создать мероприятие",
+    "/hide_past_projects - скрыть прошедшие мероприятия",
     "/new_issue - создать выдачу",
     "/new_repair - создать ремонт",
     "/new_purchase_existing - закупка существующей позиции",

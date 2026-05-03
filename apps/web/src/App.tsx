@@ -27,6 +27,7 @@ type Project = {
   location?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+  archivedAt?: string | null;
   comment?: string | null;
 };
 type Warehouse = { id: string; name: string };
@@ -187,6 +188,10 @@ function fmtDateRange(start?: string | null, end?: string | null) {
   return `${startText} - ${endText}`;
 }
 
+function isPastProject(project: Project) {
+  return Boolean(project.endDate && new Date(project.endDate).getTime() < Date.now());
+}
+
 function statusLabel(status: string) {
   const map: Record<string, string> = {
     AVAILABLE: "Доступно",
@@ -257,6 +262,7 @@ export default function App() {
   const [aiResult, setAiResult] = useState<AiResponse | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [showArchivedProjects, setShowArchivedProjects] = useState(false);
 
   const [issueForm, setIssueForm] = useState(emptyIssueForm);
   const [projectForm, setProjectForm] = useState(emptyProjectForm);
@@ -334,6 +340,21 @@ export default function App() {
     [data, purchaseForm.equipmentId]
   );
 
+  const activeProjects = useMemo(
+    () => (data?.projects ?? []).filter((project) => !project.archivedAt),
+    [data]
+  );
+
+  const visibleProjects = useMemo(
+    () => showArchivedProjects ? (data?.projects ?? []) : activeProjects,
+    [activeProjects, data, showArchivedProjects]
+  );
+
+  const pastProjectsToArchive = useMemo(
+    () => activeProjects.filter(isPastProject),
+    [activeProjects]
+  );
+
   const purchaseReady =
     Boolean(purchaseForm.title && purchaseForm.supplierName && purchaseForm.locationId && purchaseForm.quantity > 0) &&
     (purchaseForm.mode === "existing"
@@ -383,6 +404,7 @@ export default function App() {
       setData(null);
       setAiResult(null);
       setSessionId(null);
+      setShowArchivedProjects(false);
       setIssueForm(emptyIssueForm);
       setProjectForm(emptyProjectForm);
       setRepairForm(emptyRepairForm);
@@ -465,6 +487,63 @@ export default function App() {
         projectId: created.id,
         purpose: prev.purpose || created.name
       }));
+      await loadData();
+    } catch (err) {
+      setError(formatUserError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function archiveProject(projectId: string) {
+    if (!actorId) return setError("Нет прав для операции.");
+    setBusy(`project:${projectId}`);
+    setError(null);
+    try {
+      await fetchJson(`/api/projects/${projectId}/archive`, {
+        method: "POST",
+        body: JSON.stringify({ actorId })
+      });
+      if (issueForm.projectId === projectId) {
+        setIssueForm((prev) => ({ ...prev, projectId: "" }));
+      }
+      await loadData();
+    } catch (err) {
+      setError(formatUserError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function restoreProject(projectId: string) {
+    if (!actorId) return setError("Нет прав для операции.");
+    setBusy(`project:${projectId}`);
+    setError(null);
+    try {
+      await fetchJson(`/api/projects/${projectId}/restore`, {
+        method: "POST",
+        body: JSON.stringify({ actorId })
+      });
+      await loadData();
+    } catch (err) {
+      setError(formatUserError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function archivePastProjects() {
+    if (!actorId) return setError("Нет прав для операции.");
+    setBusy("project:archive-past");
+    setError(null);
+    try {
+      await fetchJson("/api/projects/archive-past", {
+        method: "POST",
+        body: JSON.stringify({ actorId })
+      });
+      if (issueForm.projectId && pastProjectsToArchive.some((project) => project.id === issueForm.projectId)) {
+        setIssueForm((prev) => ({ ...prev, projectId: "" }));
+      }
       await loadData();
     } catch (err) {
       setError(formatUserError(err));
@@ -795,22 +874,49 @@ export default function App() {
       </section>
 
       <section className="panel project-list-panel">
-        <div className="panel-header"><h2>Мероприятия</h2><span>{data?.projects.length ?? 0} записей</span></div>
+        <div className="panel-header">
+          <h2>Мероприятия</h2>
+          <div className="panel-header-actions">
+            <span>{visibleProjects.length} записей</span>
+            {actorRole === "ADMIN" ? (
+              <>
+                <button className="secondary-btn compact-btn" onClick={archivePastProjects} disabled={pastProjectsToArchive.length === 0 || busy === "project:archive-past"}>
+                  Скрыть прошедшие ({pastProjectsToArchive.length})
+                </button>
+                <button className="secondary-btn compact-btn" onClick={() => setShowArchivedProjects((value) => !value)}>
+                  {showArchivedProjects ? "Скрыть архив" : "Показать архив"}
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
         <div className="project-list">
-          {data?.projects.map((project) => (
-            <div key={project.id} className="project-row">
+          {visibleProjects.map((project) => (
+            <div key={project.id} className={`project-row${project.archivedAt ? " is-archived" : ""}`}>
               <div>
                 <strong>{project.name}</strong>
-                <small>{fmtDateRange(project.startDate, project.endDate)}</small>
+                <small>{fmtDateRange(project.startDate, project.endDate)}{isPastProject(project) ? " · прошло" : ""}</small>
               </div>
               <div>
                 <span>{project.customer || "Заказчик не указан"}</span>
                 <small>{project.location || "Площадка не указана"}</small>
               </div>
-              {project.comment ? <small>{project.comment}</small> : null}
+              <div>
+                {project.archivedAt ? <span className="status-pill status-retired">Скрыто</span> : <span className="status-pill status-available">Активно</span>}
+                {project.comment ? <small>{project.comment}</small> : null}
+              </div>
+              {actorRole === "ADMIN" ? (
+                <button
+                  className="secondary-btn compact-btn"
+                  onClick={() => project.archivedAt ? restoreProject(project.id) : archiveProject(project.id)}
+                  disabled={busy === `project:${project.id}`}
+                >
+                  {project.archivedAt ? "Вернуть" : "Скрыть"}
+                </button>
+              ) : null}
             </div>
           ))}
-          {data?.projects.length === 0 && <div className="muted-text">Мероприятий нет.</div>}
+          {visibleProjects.length === 0 && <div className="muted-text">{showArchivedProjects ? "Мероприятий нет." : "Активных мероприятий нет."}</div>}
         </div>
       </section>
 
@@ -829,7 +935,7 @@ export default function App() {
             </select>
             <select value={issueForm.projectId} onChange={(event) => setIssueForm({ ...issueForm, projectId: event.target.value })}>
               <option value="">Мероприятие (опционально)</option>
-              {data?.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              {activeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
             <select value={issueForm.assignedEmployeeId} onChange={(event) => setIssueForm({ ...issueForm, assignedEmployeeId: event.target.value })}>
               <option value="">Ответственный сотрудник (опционально)</option>
