@@ -1,4 +1,4 @@
-import type { BootstrapData, Equipment, Issue, Purchase, Repair } from "./api.js";
+import type { BootstrapData, Equipment, Issue, Project, Purchase, Repair } from "./api.js";
 
 export function statusLabel(status: string) {
   const map: Record<string, string> = {
@@ -116,6 +116,16 @@ export function purchasesText(rows: Purchase[]) {
   }).join("\n\n");
 }
 
+export function projectsText(rows: Project[]) {
+  if (rows.length === 0) return "Мероприятий нет.";
+  return rows.map((project, index) => [
+    `${index + 1}. ${project.name}`,
+    `Сроки: ${project.startDate ? fmtDate(project.startDate) : "без начала"} - ${project.endDate ? fmtDate(project.endDate) : "без окончания"}.`,
+    `Заказчик: ${project.customer ?? "не указан"}. Площадка: ${project.location ?? "не указана"}.`,
+    project.comment ? `Комментарий: ${project.comment}` : null
+  ].filter(Boolean).join("\n")).join("\n\n");
+}
+
 export function employeesText(data: BootstrapData) {
   return data.employees
     .map((employee, index) => `${index + 1}. ${employee.fullName} - ${roleLabel(employee.role)}`)
@@ -130,10 +140,12 @@ export function userHelpText() {
     "/dashboard - сводка",
     "/catalog [поиск] - каталог",
     "/employees - сотрудники",
+    "/projects - мероприятия",
     "/issues - выдачи",
     "/repairs - ремонты",
     "/purchases - закупки",
     "/ai вопрос - AI-помощник",
+    "/new_project - создать мероприятие",
     "/new_issue - создать выдачу",
     "/new_repair - создать ремонт",
     "/new_purchase_existing - закупка существующей позиции",

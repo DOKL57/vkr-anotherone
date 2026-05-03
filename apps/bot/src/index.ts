@@ -1,5 +1,5 @@
 import TelegramBot from "node-telegram-bot-api";
-import { apiFetch, askAi, bootstrap, login, logout } from "./api.js";
+import { apiFetch, askAi, bootstrap, createProject, login, logout } from "./api.js";
 import type { BootstrapData } from "./api.js";
 import { env } from "./env.js";
 import {
@@ -8,6 +8,7 @@ import {
   equipmentText,
   issuesText,
   normalize,
+  projectsText,
   purchasesText,
   repairsText,
   roleLabel,
@@ -25,9 +26,11 @@ const buttons = {
   search: "Поиск",
   ai: "AI-помощник",
   employees: "Сотрудники",
+  projects: "Мероприятия",
   issues: "Выдачи",
   repairs: "Ремонты",
   purchases: "Закупки",
+  createProject: "Создать мероприятие",
   createIssue: "Создать выдачу",
   createRepair: "Создать ремонт",
   createPurchaseExisting: "Закупить существующее",
@@ -51,10 +54,12 @@ function menuKeyboard(role?: string): TelegramBot.SendMessageOptions {
         row(buttons.dashboard, buttons.catalog),
         row(buttons.search, buttons.ai),
         row(buttons.issues, buttons.repairs, buttons.purchases),
-        row(buttons.employees, buttons.help),
+        row(buttons.projects, buttons.employees),
+        row(buttons.help),
         ...(canMutate
           ? [
-              row(buttons.createIssue, buttons.createRepair),
+              row(buttons.createProject, buttons.createIssue),
+              row(buttons.createRepair),
               row(buttons.createPurchaseExisting),
               row(buttons.createPurchaseNew),
               row(buttons.returnIssue, buttons.completeRepair),
@@ -189,6 +194,12 @@ async function handlePending(bot: TelegramBot, msg: Msg) {
       return true;
     }
 
+    if (session.pending.type === "project") {
+      await createProjectFromText(bot, chatId, text);
+      updateSession(chatId, { pending: undefined });
+      return true;
+    }
+
     if (session.pending.type === "issue") {
       await createIssueFromText(bot, chatId, text);
       updateSession(chatId, { pending: undefined });
@@ -284,6 +295,12 @@ async function handleEmployees(bot: TelegramBot, msg: Msg) {
   });
 }
 
+async function handleProjects(bot: TelegramBot, msg: Msg) {
+  await withData(msg.chat.id, async (_token, data) => {
+    await sendLongWithMenu(bot, msg.chat.id, projectsText(data.projects));
+  });
+}
+
 async function handleCatalog(bot: TelegramBot, msg: Msg, query: string) {
   await withData(msg.chat.id, async (_token, data) => {
     const terms = normalize(query);
@@ -327,6 +344,18 @@ async function handleAi(bot: TelegramBot, msg: Msg, query: string) {
   await sendLongWithMenu(bot, msg.chat.id, `Ответ (${result.intent}):\n${result.answer}`);
 }
 
+async function promptProject(bot: TelegramBot, msg: Msg) {
+  await withData(msg.chat.id, async (_token, data) => {
+    if (!canEdit(data)) throw new Error("Нет прав. Нужна роль ADMIN или WAREHOUSE.");
+    updateSession(msg.chat.id, { pending: { type: "project" } });
+    await sendLong(bot, msg.chat.id, [
+      "Новое мероприятие. Формат:",
+      "name=Фестиваль Город Звук; customer=ООО Организация мероприятий; location=ДК Центральный; start=2026-05-01T10:00; end=2026-05-03T23:00; comment=Главная сцена"
+    ].join("\n"));
+    await bot.sendMessage(msg.chat.id, "Отправьте строку с полями или нажмите Отмена.", cancelKeyboard());
+  });
+}
+
 async function promptIssue(bot: TelegramBot, msg: Msg) {
   await withData(msg.chat.id, async (_token, data) => {
     if (!canEdit(data)) throw new Error("Нет прав. Нужна роль ADMIN или WAREHOUSE.");
@@ -339,7 +368,10 @@ async function promptIssue(bot: TelegramBot, msg: Msg) {
       data.equipment.map((item, i) => `${i + 1}. ${item.name} ${item.model}`).slice(0, 30).join("\n"),
       "",
       "Склады:",
-      data.warehouses.map((item, i) => `${i + 1}. ${item.name}`).join("\n")
+      data.warehouses.map((item, i) => `${i + 1}. ${item.name}`).join("\n"),
+      "",
+      "Мероприятия:",
+      data.projects.map((item, i) => `${i + 1}. ${item.name}`).slice(0, 20).join("\n") || "пока нет"
     ].join("\n"));
     await bot.sendMessage(msg.chat.id, "Отправьте строку с полями или нажмите Отмена.", cancelKeyboard());
   });
@@ -396,6 +428,27 @@ async function promptNewPurchase(bot: TelegramBot, msg: Msg) {
       data.locations.map((item, i) => `${i + 1}. ${item.label}`).slice(0, 40).join("\n")
     ].join("\n"));
     await bot.sendMessage(msg.chat.id, "Отправьте строку с полями или нажмите Отмена.", cancelKeyboard());
+  });
+}
+
+async function createProjectFromText(bot: TelegramBot, chatId: number, text: string) {
+  await withData(chatId, async (token, data) => {
+    const p = parsePairs(text);
+    if (!canEdit(data)) throw new Error("Нет прав. Нужна роль ADMIN или WAREHOUSE.");
+    const name = p.name?.trim();
+    if (!name) throw new Error("Укажите name.");
+
+    const project = await createProject(token, {
+      actorId: data.currentUser.id,
+      name,
+      customer: p.customer,
+      location: p.location,
+      startAt: p.start ? new Date(p.start).toISOString() : undefined,
+      endAt: p.end ? new Date(p.end).toISOString() : undefined,
+      comment: p.comment
+    });
+
+    await sendMenu(bot, chatId, `Мероприятие создано: ${project.name}`);
   });
 }
 
@@ -668,6 +721,10 @@ async function main() {
         case buttons.employees:
           await handleEmployees(bot, msg);
           break;
+        case "/projects":
+        case buttons.projects:
+          await handleProjects(bot, msg);
+          break;
         case "/issues":
         case buttons.issues:
           await handleIssues(bot, msg);
@@ -683,6 +740,10 @@ async function main() {
         case "/ai":
         case buttons.ai:
           await handleAi(bot, msg, args);
+          break;
+        case "/new_project":
+        case buttons.createProject:
+          await promptProject(bot, msg);
           break;
         case "/new_issue":
         case buttons.createIssue:

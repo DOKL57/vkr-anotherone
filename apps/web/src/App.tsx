@@ -20,7 +20,15 @@ type DashboardSummary = {
 
 type Category = { id: string; name: string };
 type Employee = { id: string; fullName: string; role: string };
-type Project = { id: string; name: string };
+type Project = {
+  id: string;
+  name: string;
+  customer?: string | null;
+  location?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  comment?: string | null;
+};
 type Warehouse = { id: string; name: string };
 type StorageLocation = { id: string; label: string; warehouseId: string };
 type AuthEmployee = StoredAuthSession["employee"];
@@ -125,6 +133,15 @@ const emptyIssueForm = {
   quantity: 1
 };
 
+const emptyProjectForm = {
+  name: "",
+  customer: "",
+  location: "",
+  startAt: "",
+  endAt: "",
+  comment: ""
+};
+
 const emptyRepairForm = {
   warehouseId: "",
   locationId: "",
@@ -158,6 +175,16 @@ const emptyPurchaseForm = {
 
 function fmtDate(value?: string | null) {
   return value ? new Date(value).toLocaleDateString("ru-RU") : "—";
+}
+
+function fmtDateRange(start?: string | null, end?: string | null) {
+  if (!start && !end) {
+    return "Сроки не указаны";
+  }
+
+  const startText = start ? fmtDate(start) : "без начала";
+  const endText = end ? fmtDate(end) : "без окончания";
+  return `${startText} - ${endText}`;
 }
 
 function statusLabel(status: string) {
@@ -232,6 +259,7 @@ export default function App() {
   const [search, setSearch] = useState("");
 
   const [issueForm, setIssueForm] = useState(emptyIssueForm);
+  const [projectForm, setProjectForm] = useState(emptyProjectForm);
   const [repairForm, setRepairForm] = useState(emptyRepairForm);
   const [purchaseForm, setPurchaseForm] = useState(emptyPurchaseForm);
 
@@ -312,6 +340,8 @@ export default function App() {
       ? Boolean(purchaseForm.equipmentId)
       : Boolean(purchaseForm.categoryId && purchaseForm.name && purchaseForm.type && purchaseForm.model));
 
+  const projectReady = Boolean(projectForm.name.trim());
+
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAuthBusy(true);
@@ -354,6 +384,7 @@ export default function App() {
       setAiResult(null);
       setSessionId(null);
       setIssueForm(emptyIssueForm);
+      setProjectForm(emptyProjectForm);
       setRepairForm(emptyRepairForm);
       setPurchaseForm(emptyPurchaseForm);
     }
@@ -403,6 +434,37 @@ export default function App() {
         })
       });
       setIssueForm(emptyIssueForm);
+      await loadData();
+    } catch (err) {
+      setError(formatUserError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitProject() {
+    if (!actorId) return setError("Нет прав для операции.");
+    setBusy("project");
+    setError(null);
+    try {
+      const created = await fetchJson<Project>("/api/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          actorId,
+          name: projectForm.name,
+          customer: projectForm.customer || undefined,
+          location: projectForm.location || undefined,
+          startAt: projectForm.startAt ? new Date(projectForm.startAt).toISOString() : undefined,
+          endAt: projectForm.endAt ? new Date(projectForm.endAt).toISOString() : undefined,
+          comment: projectForm.comment || undefined
+        })
+      });
+      setProjectForm(emptyProjectForm);
+      setIssueForm((prev) => ({
+        ...prev,
+        projectId: created.id,
+        purpose: prev.purpose || created.name
+      }));
       await loadData();
     } catch (err) {
       setError(formatUserError(err));
@@ -732,6 +794,26 @@ export default function App() {
         </div>
       </section>
 
+      <section className="panel project-list-panel">
+        <div className="panel-header"><h2>Мероприятия</h2><span>{data?.projects.length ?? 0} записей</span></div>
+        <div className="project-list">
+          {data?.projects.map((project) => (
+            <div key={project.id} className="project-row">
+              <div>
+                <strong>{project.name}</strong>
+                <small>{fmtDateRange(project.startDate, project.endDate)}</small>
+              </div>
+              <div>
+                <span>{project.customer || "Заказчик не указан"}</span>
+                <small>{project.location || "Площадка не указана"}</small>
+              </div>
+              {project.comment ? <small>{project.comment}</small> : null}
+            </div>
+          ))}
+          {data?.projects.length === 0 && <div className="muted-text">Мероприятий нет.</div>}
+        </div>
+      </section>
+
       {actorId && (actorRole === "ADMIN" || actorRole === "WAREHOUSE") ? (
         <section className="grid-three">
           <article className="panel">
@@ -746,7 +828,7 @@ export default function App() {
               {data?.warehouses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
             <select value={issueForm.projectId} onChange={(event) => setIssueForm({ ...issueForm, projectId: event.target.value })}>
-              <option value="">Проект / Ивент (опционально)</option>
+              <option value="">Мероприятие (опционально)</option>
               {data?.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
             <select value={issueForm.assignedEmployeeId} onChange={(event) => setIssueForm({ ...issueForm, assignedEmployeeId: event.target.value })}>
@@ -756,6 +838,17 @@ export default function App() {
             <input value={issueForm.purpose} onChange={(event) => setIssueForm({ ...issueForm, purpose: event.target.value })} placeholder="Цель выдачи" />
             <input type="datetime-local" value={issueForm.dueAt} onChange={(event) => setIssueForm({ ...issueForm, dueAt: event.target.value })} />
             <button className="primary-btn" onClick={submitIssue} disabled={!issueForm.equipmentId || !issueForm.warehouseId || !issueForm.dueAt}>Оформить выдачу</button>
+          </article>
+
+          <article className="panel">
+            <div className="panel-header"><h2>Мероприятие</h2><span>{busy === "project" ? "Сохранение..." : "Добавление"}</span></div>
+            <input value={projectForm.name} onChange={(event) => setProjectForm({ ...projectForm, name: event.target.value })} placeholder="Название мероприятия" />
+            <input value={projectForm.customer} onChange={(event) => setProjectForm({ ...projectForm, customer: event.target.value })} placeholder="Заказчик" />
+            <input value={projectForm.location} onChange={(event) => setProjectForm({ ...projectForm, location: event.target.value })} placeholder="Площадка / адрес" />
+            <input type="datetime-local" value={projectForm.startAt} onChange={(event) => setProjectForm({ ...projectForm, startAt: event.target.value })} />
+            <input type="datetime-local" value={projectForm.endAt} onChange={(event) => setProjectForm({ ...projectForm, endAt: event.target.value })} />
+            <textarea value={projectForm.comment} onChange={(event) => setProjectForm({ ...projectForm, comment: event.target.value })} rows={2} placeholder="Комментарий" />
+            <button className="primary-btn" onClick={submitProject} disabled={!projectReady || busy === "project"}>Добавить мероприятие</button>
           </article>
 
           <article className="panel">

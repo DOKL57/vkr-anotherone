@@ -288,6 +288,28 @@ const issueCreateSchema = z.object({
     .min(1)
 });
 
+const projectCreateSchema = z.object({
+  actorId: z.string().min(1),
+  name: z.string().trim().min(2),
+  customer: z.string().optional(),
+  location: z.string().optional(),
+  startAt: z.string().datetime().optional(),
+  endAt: z.string().datetime().optional(),
+  comment: z.string().optional()
+}).superRefine((input, ctx) => {
+  if (!input.startAt || !input.endAt) {
+    return;
+  }
+
+  if (Date.parse(input.endAt) < Date.parse(input.startAt)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endAt"],
+      message: "Дата окончания не может быть раньше даты начала."
+    });
+  }
+});
+
 const repairCreateSchema = z.object({
   actorId: z.string().min(1),
   warehouseId: z.string().min(1),
@@ -1051,8 +1073,27 @@ async function getBootstrapData() {
         []
       ),
       getEmployeeRows(),
-      query<{ id: string; name: string; customer: string | null; location: string | null }>(
-        "SELECT id, name, customer, location FROM project ORDER BY start_date NULLS LAST, name",
+      query<{
+        id: string;
+        name: string;
+        customer: string | null;
+        location: string | null;
+        startDate: Date | null;
+        endDate: Date | null;
+        comment: string | null;
+      }>(
+        `
+          SELECT
+            id,
+            name,
+            customer,
+            location,
+            start_date AS "startDate",
+            end_date AS "endDate",
+            comment
+          FROM project
+          ORDER BY start_date NULLS LAST, name
+        `,
         []
       ),
       getEquipmentRows(),
@@ -1149,7 +1190,15 @@ async function getBootstrapData() {
       email: row.email,
       position: row.position
     })),
-    projects,
+    projects: projects.map((row) => ({
+      id: row.id,
+      name: row.name,
+      customer: row.customer,
+      location: row.location,
+      startDate: row.startDate?.toISOString() ?? null,
+      endDate: row.endDate?.toISOString() ?? null,
+      comment: row.comment
+    })),
     equipment: equipmentView,
     issues,
     repairs,
@@ -1191,6 +1240,86 @@ async function createEquipment(payload: unknown) {
     return {
       id: equipment.id,
       createdAt: equipment.createdAt.toISOString()
+    };
+  });
+}
+
+async function createProject(payload: unknown) {
+  const input = projectCreateSchema.parse(payload);
+  const employee = await requireRole(input.actorId, ["ADMIN", "WAREHOUSE"]);
+
+  return withTransaction(async (client) => {
+    const project = await queryOne<{
+      id: string;
+      name: string;
+      customer: string | null;
+      location: string | null;
+      startDate: Date | null;
+      endDate: Date | null;
+      comment: string | null;
+    }>(
+      `
+        INSERT INTO project (
+          id,
+          name,
+          customer,
+          location,
+          start_date,
+          end_date,
+          comment
+        )
+        VALUES (gen_random_uuid()::text, $1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, NULLIF($6, ''))
+        RETURNING
+          id,
+          name,
+          customer,
+          location,
+          start_date AS "startDate",
+          end_date AS "endDate",
+          comment
+      `,
+      [
+        input.name.trim(),
+        input.customer?.trim() ?? "",
+        input.location?.trim() ?? "",
+        input.startAt ? new Date(input.startAt) : null,
+        input.endAt ? new Date(input.endAt) : null,
+        input.comment?.trim() ?? ""
+      ],
+      client
+    );
+
+    if (!project) {
+      throw new Error("Не удалось создать мероприятие.");
+    }
+
+    await client.query(
+      `
+        INSERT INTO operation_log (id, user_id, action, details)
+        VALUES (gen_random_uuid()::text, $1, 'PROJECT_CREATED', $2::jsonb)
+      `,
+      [
+        employee.appUserId,
+        JSON.stringify({
+          projectId: project.id,
+          name: project.name,
+          customer: project.customer,
+          location: project.location,
+          startDate: project.startDate?.toISOString() ?? null,
+          endDate: project.endDate?.toISOString() ?? null,
+          createdById: employee.employeeId
+        })
+      ]
+    );
+
+    return {
+      id: project.id,
+      name: project.name,
+      customer: project.customer,
+      location: project.location,
+      startDate: project.startDate?.toISOString() ?? null,
+      endDate: project.endDate?.toISOString() ?? null,
+      comment: project.comment
     };
   });
 }
@@ -2260,6 +2389,13 @@ export function createApp() {
     const body = typeof req.body === "object" && req.body ? { ...req.body } as Record<string, unknown> : {};
     body.actorId = resolveActorId(req as AuthenticatedRequest, typeof body.actorId === "string" ? body.actorId : undefined);
     const created = await createEquipment(body);
+    res.status(201).json(created);
+  }));
+
+  app.post("/api/projects", asyncHandler(async (req, res) => {
+    const body = typeof req.body === "object" && req.body ? { ...req.body } as Record<string, unknown> : {};
+    body.actorId = resolveActorId(req as AuthenticatedRequest, typeof body.actorId === "string" ? body.actorId : undefined);
+    const created = await createProject(body);
     res.status(201).json(created);
   }));
 

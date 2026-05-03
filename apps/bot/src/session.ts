@@ -12,6 +12,7 @@ export type PendingAction =
   | { type: "login" }
   | { type: "ai" }
   | { type: "search" }
+  | { type: "project" }
   | { type: "issue" }
   | { type: "repair" }
   | { type: "purchase_existing" }

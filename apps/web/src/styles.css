@@ -294,6 +294,7 @@ button { cursor: pointer; border: 0; outline: none; }
 .accent-6 { background: linear-gradient(180deg, rgba(255, 126, 51, 0.05), transparent), var(--panel); border-top: 3px solid var(--accent); }
 
 .panel { padding: 24px; }
+.page-shell > section.panel { margin-top: 24px; }
 .panel-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .panel-header h2 { margin: 0; font-size: 22px; color: #111827; }
 .panel-header span { font-size: 14px; color: var(--muted); font-weight: 500; background: rgba(0,0,0,0.05); padding: 4px 10px; border-radius: 999px; }
@@ -415,6 +416,38 @@ textarea { resize: vertical; }
   grid-column: 2;
 }
 
+.project-list {
+  display: grid;
+  gap: 10px;
+}
+
+.project-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(180px, 1fr) minmax(160px, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.project-row > div {
+  display: grid;
+  gap: 2px;
+}
+
+.project-row strong,
+.project-row span {
+  color: #111827;
+  font-size: 14px;
+}
+
+.project-row small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .table-wrap { overflow-x: auto; margin: 0 -24px; padding: 0 24px; }
 table { width: 100%; border-collapse: collapse; min-width: 800px; }
 th, td { 
@@ -497,6 +530,7 @@ td strong { color: #111827; display: block; margin-bottom: 4px; }
   .hero { border-radius: 20px; padding: 24px; }
   .stat-card { min-height: auto; flex-direction: row; align-items: center; }
   .stat-card strong { font-size: 28px; }
+  .project-row { grid-template-columns: 1fr; }
 }
 
 .item-delay-1 { animation-delay: 0.1s; }

@@ -23,7 +23,15 @@ export type DashboardSummary = {
 
 export type Employee = { id: string; fullName: string; role: string };
 export type Warehouse = { id: string; name: string };
-export type Project = { id: string; name: string };
+export type Project = {
+  id: string;
+  name: string;
+  customer?: string | null;
+  location?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  comment?: string | null;
+};
 export type Category = { id: string; name: string };
 export type StorageLocation = { id: string; label: string; warehouseId: string };
 
@@ -158,5 +166,20 @@ export function askAi(token: string, query: string, sessionId?: string | null) {
   return apiFetch<AiResponse>("/api/ai/query", {
     method: "POST",
     body: JSON.stringify({ query, sessionId })
+  }, token);
+}
+
+export function createProject(token: string, input: {
+  actorId: string;
+  name: string;
+  customer?: string;
+  location?: string;
+  startAt?: string;
+  endAt?: string;
+  comment?: string;
+}) {
+  return apiFetch<Project>("/api/projects", {
+    method: "POST",
+    body: JSON.stringify(input)
   }, token);
 }
